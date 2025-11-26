@@ -8,5 +8,8 @@ def get_task(args):
     elif args.task == 'tb':
         from src.uot.tasks.troubleshooting import TBTask
         return TBTask(args)
+    elif args.task == 'mediq':
+        from src.uot.tasks.mediq import MediQTask
+        return MediQTask(args)
     else:
         raise NotImplementedError

@@ -61,13 +61,14 @@ def run(args):
         with open(log_file, 'w', encoding='utf-8') as f:
             f.write(json.dumps(logs) + '\n')
 
+
+    # evaluation
     evaluate_performance(log_file, task)
     
     qwen_model = "Qwen/Qwen3-30B-A3B-Thinking-2507-FP8"
     HUGGINGFACE_HUB_CACHE = os.getenv("HUGGINGFACE_HUB_CACHE", "")
     tokenizer = AutoTokenizer.from_pretrained(qwen_model, cache_dir=HUGGINGFACE_HUB_CACHE)
     
-    # new
     num_samples = len(logs)
     if num_samples > 0:
         # 1) success / accuracy
@@ -76,8 +77,6 @@ def run(args):
         avg_turn = sum(l.get("turn", 0) for l in logs) / num_samples
 
         # 2)  user / system token 
-        # def count_tokens(text: str) -> int:
-        #     return len(text.split())
         def count_tokens(text: str) -> int:
             return len(tokenizer.encode(text))
 
@@ -105,12 +104,12 @@ def run(args):
             "num_success": num_success,
             "accuracy": accuracy,
             "avg_turn": avg_turn,
-            "total_user_tokens": total_user_tokens,
-            "total_system_tokens": total_system_tokens,
-            "num_user_msgs": num_user_msgs,
-            "num_system_msgs": num_system_msgs,
-            "avg_user_tokens_per_msg": avg_user_tokens,
-            "avg_system_tokens_per_msg": avg_system_tokens,
+            "total_exam_tokens": total_user_tokens,
+            "total_guess_tokens": total_system_tokens,
+            "num_exam_msgs": num_user_msgs,
+            "num_guess_msgs": num_system_msgs,
+            "avg_exam_tokens_per_msg": avg_user_tokens,
+            "avg_guess_tokens_per_msg": avg_system_tokens,
         }
     else:
         metrics = {
@@ -118,12 +117,12 @@ def run(args):
             "num_success": 0,
             "accuracy": 0.0,
             "avg_turn": 0.0,
-            "total_user_tokens": 0,
-            "total_system_tokens": 0,
-            "num_user_msgs": 0,
-            "num_system_msgs": 0,
-            "avg_user_tokens_per_msg": 0.0,
-            "avg_system_tokens_per_msg": 0.0,
+            "total_exam_tokens": 0,
+            "total_guess_tokens": 0,
+            "num_exam_msgs": 0,
+            "num_guess_msgs": 0,
+            "avg_exam_tokens_per_msg": 0.0,
+            "avg_guess_tokens_per_msg": 0.0,
         }
 
     metrics_file = log_file.replace(".json", "_metrics.json")
@@ -144,9 +143,9 @@ def parse_args():
     args.add_argument('--examiner_model', type=str, default='gpt-4')
 
     args.add_argument('--task', type=str, default='20q',
-                      choices=['20q', 'md', 'tb'])
+                      choices=['20q', 'md', 'tb', 'mediq'])
     args.add_argument('--dataset', type=str, default='common',
-                      choices=['bigbench', 'common', 'thing', 'DX', 'MedDG', 'FloDial'])
+                      choices=['bigbench', 'common', 'thing', 'DX', 'MedDG', 'FloDial', "icraftmd", "imedqa"])
     args.add_argument('--task_start_index', type=int, default=-1)
     args.add_argument('--task_end_index', type=int, default=-1)
     args.add_argument('--open_set_size', type=int, default=-1)
@@ -164,8 +163,8 @@ def parse_args():
     # exact number when > 0 (e.g. 10: Each layer has a maximum of 10 nodes, M or U, remaining)
     # percentage when < 0 (e.g. -0.5: The remaining 50% of nodes in each layer)
 
-    args.add_argument('--expected_action_tokens', type=int, default=50)
-    args.add_argument('--expected_target_tokens', type=int, default=10)
+    args.add_argument('--expected_action_tokens', type=int, default=500)
+    args.add_argument('--expected_target_tokens', type=int, default=20)
 
     args.add_argument('--none_acc_reward', action='store_true', default=False)
     args.add_argument('--expected_reward_method', type=str, default='avg', choices=['avg', 'max'])

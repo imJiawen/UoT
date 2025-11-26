@@ -7,6 +7,7 @@ task_parameter_mapping = {
     "20q": "twenty_question",
     "md": "medical_diagnosis",
     "tb": "troubleshooting",
+    "mediq": "mediq",
 }
 
 
@@ -57,10 +58,12 @@ def ques_and_cls_given_items(task, items: list, n, asked_ques: list = None, rest
         return ans
 
     def format_rsp(rsp):
-        gpt3_response = get_response_method("gpt-3.5-turbo")
+        # gpt3_response = get_response_method("gpt-3.5-turbo")
+        gpt3_response = get_response_method(task.examiner_model)
         message.append({"role": "system", "content": rsp})
         message.append({"role": "user", "content": task.prompts.format_generated_prompt.format(rsp=rsp)})
-        return gpt3_response(message, "gpt-3.5-turbo", max_tokens=500)
+        # return gpt3_response(message, "gpt-3.5-turbo", max_tokens=500)
+        return gpt3_response(message, task.examiner_model, max_tokens=500)
 
     try:
         return process_ans(rsp)
@@ -78,8 +81,10 @@ def cls_given_repo(task, items: list, repo, translate=False, self_repo=True):
     if self_repo:
         if translate:
             message = [{"role": "user", "content": f"Translate to English: {repo}"}]
-            gpt3_response = get_response_method("gpt-3.5-turbo")
-            repo = gpt3_response(message, model="gpt-3.5-turbo", max_tokens=500)
+            # gpt3_response = get_response_method("gpt-3.5-turbo")
+            gpt3_response = get_response_method(task.examiner_model)
+            # repo = gpt3_response(message, model="gpt-3.5-turbo", max_tokens=500)
+            repo = gpt3_response(message, model=task.examiner_model, max_tokens=500)
         repo = task.prompts.self_repo_prompt.format(repo=repo)
     else:
         repo = task.prompts.free_answer_prompt.format(repo=repo)

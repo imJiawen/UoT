@@ -198,7 +198,7 @@ def mistral_response(message: list, model="mistral-large-latest", temperature=0,
         time.sleep(1)
         return mistral_response(message, model, temperature, max_tokens)
     
-def qwen_response(message: list, model="Qwen/Qwen3-30B-A3B-Thinking-2507-FP8", temperature=0.6, max_tokens=16384):
+def qwen_response(message: list, model="Qwen/Qwen3-30B-A3B-Thinking-2507-FP8", temperature=0.6, max_tokens=500):
     try:
         raw_prompt_text = qwen_tokenizer.apply_chat_template(
             conversation=message,
@@ -213,8 +213,6 @@ def qwen_response(message: list, model="Qwen/Qwen3-30B-A3B-Thinking-2507-FP8", t
             temperature=temperature,
             logprobs=2,
             top_p=0.95,
-            top_k=20,
-            min_p=0,
             max_tokens=max_tokens,  # NOTE: max generated output tokens (must < --model-max-len when running vllm serve)
         )
         # return chat_completion.choices[0].message.content
