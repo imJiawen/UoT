@@ -1,4 +1,4 @@
-from uot.tasks.prompts.general import *
+from src.uot.tasks.prompts.general import *
 
 # method
 generate_prompt_rest = '''You are a technician. Here are all issues that the client may face with:

@@ -5,10 +5,11 @@ import pickle
 
 from tqdm import tqdm
 
-from uot.tasks import get_task
-from uot.method import converse, naive_converse
-from uot.eval import evaluate_performance
+from src.uot.tasks import get_task
+from src.uot.method import converse, naive_converse
+from src.uot.eval import evaluate_performance
 
+from transformers import AutoTokenizer
 
 def run(args):
     task = get_task(args)
@@ -61,6 +62,74 @@ def run(args):
             f.write(json.dumps(logs) + '\n')
 
     evaluate_performance(log_file, task)
+    
+    qwen_model = "Qwen/Qwen3-30B-A3B-Thinking-2507-FP8"
+    HUGGINGFACE_HUB_CACHE = os.getenv("HUGGINGFACE_HUB_CACHE", "")
+    tokenizer = AutoTokenizer.from_pretrained(qwen_model, cache_dir=HUGGINGFACE_HUB_CACHE)
+    
+    # new
+    num_samples = len(logs)
+    if num_samples > 0:
+        # 1) success / accuracy
+        num_success = sum(1 for l in logs if l.get("state") == 1)
+        accuracy = num_success / num_samples
+        avg_turn = sum(l.get("turn", 0) for l in logs) / num_samples
+
+        # 2)  user / system token 
+        # def count_tokens(text: str) -> int:
+        #     return len(text.split())
+        def count_tokens(text: str) -> int:
+            return len(tokenizer.encode(text))
+
+        total_user_tokens = 0
+        total_system_tokens = 0
+        num_user_msgs = 0
+        num_system_msgs = 0
+
+        for l in logs:
+            for msg in l.get("history_g", []):
+                role = msg.get("role")
+                content = msg.get("content", "")
+                if role == "user":
+                    total_user_tokens += count_tokens(content)
+                    num_user_msgs += 1
+                elif role == "system":
+                    total_system_tokens += count_tokens(content)
+                    num_system_msgs += 1
+
+        avg_user_tokens = total_user_tokens / num_user_msgs if num_user_msgs > 0 else 0.0
+        avg_system_tokens = total_system_tokens / num_system_msgs if num_system_msgs > 0 else 0.0
+
+        metrics = {
+            "num_samples": num_samples,
+            "num_success": num_success,
+            "accuracy": accuracy,
+            "avg_turn": avg_turn,
+            "total_user_tokens": total_user_tokens,
+            "total_system_tokens": total_system_tokens,
+            "num_user_msgs": num_user_msgs,
+            "num_system_msgs": num_system_msgs,
+            "avg_user_tokens_per_msg": avg_user_tokens,
+            "avg_system_tokens_per_msg": avg_system_tokens,
+        }
+    else:
+        metrics = {
+            "num_samples": 0,
+            "num_success": 0,
+            "accuracy": 0.0,
+            "avg_turn": 0.0,
+            "total_user_tokens": 0,
+            "total_system_tokens": 0,
+            "num_user_msgs": 0,
+            "num_system_msgs": 0,
+            "avg_user_tokens_per_msg": 0.0,
+            "avg_system_tokens_per_msg": 0.0,
+        }
+
+    metrics_file = log_file.replace(".json", "_metrics.json")
+    with open(metrics_file, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2, ensure_ascii=False)
+    print(f"Saved metrics to {metrics_file}")
 
 
 def parse_args():
@@ -70,7 +139,7 @@ def parse_args():
                                '_claude-2', 'claude-3-opus-20240229', 'claude-3-sonnet-20240229',
                                'palm-2', 'cohere', 'llama-2-70b-chat',
                                'mistral-small-latest', 'mistral-medium-latest', 'mistral-large-latest',
-                               'gemma', 'gemini-1.0-pro'])
+                               'gemma', 'gemini-1.0-pro','qwen'])
     args.add_argument('--temperature', type=float, default=0)
     args.add_argument('--examiner_model', type=str, default='gpt-4')
 

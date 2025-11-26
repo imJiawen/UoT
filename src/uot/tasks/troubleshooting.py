@@ -2,8 +2,8 @@ import os
 import json
 import pandas as pd
 
-from uot.chat_utils import import_prompts_by_task
-from uot.uot import UoTNode
+from src.uot.chat_utils import import_prompts_by_task
+from src.uot.uot import UoTNode
 
 
 class TBTask:

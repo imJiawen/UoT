@@ -1,5 +1,5 @@
-from uot.chat_utils import import_prompts_by_task
-from uot.uot import UoTNode
+from src.uot.chat_utils import import_prompts_by_task
+from src.uot.uot import UoTNode
 
 
 class Q20Task:
@@ -13,7 +13,7 @@ class Q20Task:
         self.root = None
 
     def load_dataset(self, name):
-        from uot.data.data_20q import BIG_BENCH_CONCEPT, COMMON, THING200
+        from src.uot.data.data_20q import BIG_BENCH_CONCEPT, COMMON, THING200
         if name == "bigbench":
             self.set = BIG_BENCH_CONCEPT if self.open_set_size <= 0 else self.set
             return [{"target": x} for x in BIG_BENCH_CONCEPT]

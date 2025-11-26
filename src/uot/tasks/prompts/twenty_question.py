@@ -1,4 +1,4 @@
-from uot.tasks.prompts.general import *
+from src.uot.tasks.prompts.general import *
 
 # method
 generate_prompt_rest = '''Here are all the X:

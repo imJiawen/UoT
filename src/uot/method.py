@@ -1,8 +1,8 @@
 import copy
 
-from uot.chat_utils import renew_open_set
-from uot.models import get_response_method
-from uot.uot import select, renew_node_to_root
+from src.uot.chat_utils import renew_open_set
+from src.uot.models import get_response_method
+from src.uot.uot import select, renew_node_to_root
 
 
 def get_examiner_response(task, history):
@@ -15,10 +15,12 @@ def get_guesser_response(task, history, ques_id, node):
     response = get_response_method(task.guesser_model)
 
     def simplify_rsp(rsp):
-        gpt3_response = get_response_method("gpt-3.5-turbo")
+        # gpt3_response = get_response_method("gpt-3.5-turbo")
+        gpt3_response = get_response_method(task.examiner_model)
         if len(rsp.split(" ")) > task.expected_action_tokens:
             m = [{"role": "user", "content": task.prompts.extract_q_prompt.format(rsp=rsp)}]
-            rsp = gpt3_response(m, model="gpt-3.5-turbo", max_tokens=task.expected_action_tokens)
+            # rsp = gpt3_response(m, model="gpt-3.5-turbo", max_tokens=task.expected_action_tokens)
+            rsp = gpt3_response(m, model=task.examiner_model, max_tokens=task.expected_action_tokens)
         return rsp
 
     if len(node.items) == 1:
@@ -54,9 +56,11 @@ def get_guesser_naive_response(task, history, ques_id):
     rsp = response(msg, model=task.guesser_model)
 
     def extract_ques(rsp):
-        gpt3_response = get_response_method("gpt-3.5-turbo")
+        # gpt3_response = get_response_method("gpt-3.5-turbo")
+        gpt3_response = get_response_method(task.examiner_model)
         message = [{"role": "user", "content": task.prompts.extract_q_prompt.format(rsp=rsp)}]
-        return gpt3_response(message, model="gpt-3.5-turbo")
+        # return gpt3_response(message, model="gpt-3.5-turbo")
+        return gpt3_response(message, model=task.examiner_model)
 
     return extract_ques(rsp) if len(rsp.split(" ")) > task.expected_action_tokens else rsp
 

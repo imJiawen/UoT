@@ -1,6 +1,6 @@
 import numpy as np
 
-from uot.chat_utils import ques_and_cls_given_items, cls_given_repo, initialize_open_set, renew_open_set
+from src.uot.chat_utils import ques_and_cls_given_items, cls_given_repo, initialize_open_set, renew_open_set
 
 
 class UoTNode:

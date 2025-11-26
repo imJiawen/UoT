@@ -9,8 +9,8 @@ if OPENAI_API_KEY != "":
 
     client = OpenAI(api_key=OPENAI_API_KEY)
     print(f"OPENAI_API_KEY: ****{OPENAI_API_KEY[-4:]}")
-else:
-    print("Warning: OPENAI_API_KEY is not set")
+# else:
+#     print("Warning: OPENAI_API_KEY is not set")
 
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 if COHERE_API_KEY != "":
@@ -57,6 +57,21 @@ if MISTRAL_API_KEY != "":
 
     mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
     print(f"MISTRAL_API_KEY: ****{MISTRAL_API_KEY[-4:]}")
+    
+QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
+QWEN_IP = os.getenv("QWEN_IP", "")
+QWEN_PORT = os.getenv("QWEN_PORT", "")
+HUGGINGFACE_HUB_CACHE = os.getenv("HUGGINGFACE_HUB_CACHE", "")
+if QWEN_API_KEY != "":
+    from openai import OpenAI
+    from transformers import AutoTokenizer
+    qwen_model = "Qwen/Qwen3-30B-A3B-Thinking-2507-FP8"
+    qwen_tokenizer = AutoTokenizer.from_pretrained(qwen_model, cache_dir=HUGGINGFACE_HUB_CACHE)
+    qwen_client = OpenAI(
+        base_url=f"{QWEN_IP}:{QWEN_PORT}/v1",
+        api_key=QWEN_API_KEY,
+    )
+    client = qwen_client
 
 
 def gpt_response(message: list, model="gpt-4", temperature=0, max_tokens=500):
@@ -64,7 +79,11 @@ def gpt_response(message: list, model="gpt-4", temperature=0, max_tokens=500):
     try:
         res = client.chat.completions.create(model=model, messages=message, temperature=temperature, n=1,
                                              max_tokens=max_tokens)
-        return res.choices[0].message.content
+        
+        try:
+            return res.choices[0].message.content
+        except:
+            return res.choices[0].text
     except Exception as e:
         print(e)
         time.sleep(time_gap.get(model, 3) * 2)
@@ -178,6 +197,32 @@ def mistral_response(message: list, model="mistral-large-latest", temperature=0,
         print(e)
         time.sleep(1)
         return mistral_response(message, model, temperature, max_tokens)
+    
+def qwen_response(message: list, model="Qwen/Qwen3-30B-A3B-Thinking-2507-FP8", temperature=0.6, max_tokens=16384):
+    try:
+        raw_prompt_text = qwen_tokenizer.apply_chat_template(
+            conversation=message,
+            add_generation_prompt=True,
+            tokenize=False,
+            enable_reasoning=True,
+            add_special_tokens=True,
+        )
+        chat_completion = qwen_client.completions.create(  # NOTE: Only for /completions endpoint
+            model=qwen_model,
+            prompt=raw_prompt_text,
+            temperature=temperature,
+            logprobs=2,
+            top_p=0.95,
+            top_k=20,
+            min_p=0,
+            max_tokens=max_tokens,  # NOTE: max generated output tokens (must < --model-max-len when running vllm serve)
+        )
+        # return chat_completion.choices[0].message.content
+        return chat_completion.choices[0].text
+    except Exception as e:
+        print(e)
+        time.sleep(1)
+        return qwen_response(message, model, temperature, max_tokens)
 
 
 def gemma_response(message: list, model=None, temperature=0, max_tokens=500):
@@ -201,5 +246,6 @@ def get_response_method(model):
         "mistral": mistral_response,
         "gemma": gemma_response,
         "gemini": gemini_response,
+        "qwen": qwen_response,
     }
     return response_methods.get(model.split("-")[0], lambda _: NotImplementedError())

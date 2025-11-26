@@ -1,7 +1,7 @@
 import copy
 import importlib
 
-from uot.models import get_response_method
+from src.uot.models import get_response_method
 
 task_parameter_mapping = {
     "20q": "twenty_question",
@@ -12,7 +12,7 @@ task_parameter_mapping = {
 
 def import_prompts_by_task(task_name):
     parameter = task_parameter_mapping.get(task_name)
-    module_name = f"uot.tasks.prompts.{parameter}"
+    module_name = f"src.uot.tasks.prompts.{parameter}"
     try:
         module = importlib.import_module(module_name)
         return module
