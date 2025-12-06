@@ -216,7 +216,9 @@ def qwen_response(message: list, model="Qwen/Qwen3-30B-A3B-Thinking-2507-FP8", t
             max_tokens=max_tokens,  # NOTE: max generated output tokens (must < --model-max-len when running vllm serve)
         )
         # return chat_completion.choices[0].message.content
-        return chat_completion.choices[0].text
+        response_text = chat_completion.choices[0].text
+        
+        return chat_completion, response_text
     except Exception as e:
         print(e)
         time.sleep(1)

@@ -10,7 +10,7 @@ class TBTask:
     def __init__(self, args):
         self.__dict__.update(vars(args))
         self.free_answer = False
-        self.max_turn = 20
+        self.max_turn = args.max_turn # 20
         self.prompts = import_prompts_by_task("tb")
         self.set = []
         self.data = self.load_dataset(args.dataset)

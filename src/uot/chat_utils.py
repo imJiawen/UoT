@@ -28,13 +28,24 @@ def ques_and_cls_given_items(task, items: list, n, asked_ques: list = None, rest
 
     if rest:
         asked = '\n'.join([f"Question {i + 1}: {asked_ques[i]}" for i in range(len(asked_ques))])
-        message = [{"role": "user", "content": task.prompts.generate_prompt_rest.format(
-            items_str=', '.join(items), n=n, asked=asked, Q1=asked_ques[0])}]
+        
+        if task.inform:
+            message = [{"role": "user", "content": task.prompts.generate_prompt_rest_w_opt.format(
+                items_str=', '.join(items), n=n, asked=asked, Q1=asked_ques[0])}]
+        else:
+            message = [{"role": "user", "content": task.prompts.generate_prompt_rest.format(
+                n=n, asked=asked, Q1=asked_ques[0])}]
     else:
         asked = "(The question should not be '" + "' or '".join(asked_ques) + "')" if asked_ques else ""
-        message = [{"role": "user", "content": task.prompts.generate_prompt.format(items_str=', '.join(items), n=n, asked=asked)}]
+        
+        if task.inform:
+            message = [{"role": "user", "content": task.prompts.generate_prompt_w_opt.format(items_str=', '.join(items), n=n, asked=asked)}]
+        else:
+            message = [{"role": "user", "content": task.prompts.generate_prompt.format(n=n, asked=asked)}]
     print(message)
-    rsp = "#" + response(message, model=task.guesser_model, max_tokens=2000)
+    
+    resp, response_text = response(message, model=task.guesser_model, max_tokens=2000)
+    rsp = "#" + response_text
     print([rsp])
 
     def process_ans(rsp):
@@ -63,7 +74,8 @@ def ques_and_cls_given_items(task, items: list, n, asked_ques: list = None, rest
         message.append({"role": "system", "content": rsp})
         message.append({"role": "user", "content": task.prompts.format_generated_prompt.format(rsp=rsp)})
         # return gpt3_response(message, "gpt-3.5-turbo", max_tokens=500)
-        return gpt3_response(message, task.examiner_model, max_tokens=500)
+        resp, resp_text = gpt3_response(message, task.examiner_model, max_tokens=500)
+        return resp_text
 
     try:
         return process_ans(rsp)
@@ -84,11 +96,13 @@ def cls_given_repo(task, items: list, repo, translate=False, self_repo=True):
             # gpt3_response = get_response_method("gpt-3.5-turbo")
             gpt3_response = get_response_method(task.examiner_model)
             # repo = gpt3_response(message, model="gpt-3.5-turbo", max_tokens=500)
-            repo = gpt3_response(message, model=task.examiner_model, max_tokens=500)
+            raw_repo, repo = gpt3_response(message, model=task.examiner_model, max_tokens=500)
         repo = task.prompts.self_repo_prompt.format(repo=repo)
     else:
         repo = task.prompts.free_answer_prompt.format(repo=repo)
+        
     message = [{"role": "user", "content": task.prompts.classify_prompt.format(item_list_str=', '.join(items), repo=repo)}]
+        
     rsp = response(message, model=task.guesser_model, max_tokens=len(items)*(task.expected_target_tokens+5))
     print([rsp])
 

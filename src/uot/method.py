@@ -8,7 +8,8 @@ from src.uot.uot import select, renew_node_to_root
 def get_examiner_response(task, history):
     response = get_response_method(task.examiner_model)
     msg = [history[0]] + history[-3:] if len(history) > 3 else history
-    return response(msg, model=task.examiner_model)
+    response, response_text = response(msg, model=task.examiner_model)
+    return response, response_text
 
 
 def get_guesser_response(task, history, ques_id, node):
@@ -17,11 +18,12 @@ def get_guesser_response(task, history, ques_id, node):
     def simplify_rsp(rsp):
         # gpt3_response = get_response_method("gpt-3.5-turbo")
         gpt3_response = get_response_method(task.examiner_model)
+        rsp_text = rsp
         if len(rsp.split(" ")) > task.expected_action_tokens:
             m = [{"role": "user", "content": task.prompts.extract_q_prompt.format(rsp=rsp)}]
             # rsp = gpt3_response(m, model="gpt-3.5-turbo", max_tokens=task.expected_action_tokens)
-            rsp = gpt3_response(m, model=task.examiner_model, max_tokens=task.expected_action_tokens)
-        return rsp
+            rsp, rsp_text = gpt3_response(m, model=task.examiner_model, max_tokens=task.expected_action_tokens)
+        return rsp, rsp_text
 
     if len(node.items) == 1:
         target_question = task.prompts.target_question_FA if task.free_answer else task.prompts.target_question
@@ -30,16 +32,26 @@ def get_guesser_response(task, history, ques_id, node):
         else:
             targeting_prompt_free = task.prompts.targeting_prompt_free_FA if task.free_answer else task.prompts.targeting_prompt_free
             msg = copy.deepcopy(history) + [{"role": "user", "content": targeting_prompt_free}]
-            return node, simplify_rsp(response(msg, model=task.guesser_model)), False
+            
+            resp, resp_text = response(msg, model=task.guesser_model)
+            simplified_resp, simplified_resp_text  = simplify_rsp(resp_text)
+            return node, simplified_resp, simplified_resp_text, False
 
     if ques_id < int(task.max_turn*0.6):
         n = select(task, node)
         if n:
             return n, n.question, True
 
-    targeting_prompt_set = task.prompts.targeting_prompt_set_FA if task.free_answer else task.prompts.targeting_prompt_set
-    msg = copy.deepcopy(history) + [{"role": "user", "content": targeting_prompt_set.format(item_list_str=', '.join(node.items))}]
-    return node, simplify_rsp(response(msg, model=task.guesser_model)), False
+    if task.inform:
+        targeting_prompt_set = task.prompts.targeting_prompt_set_FA if task.free_answer else task.prompts.targeting_prompt_set
+        msg = copy.deepcopy(history) + [{"role": "user", "content": targeting_prompt_set.format(item_list_str=', '.join(node.items))}]
+    else:
+        targeting_prompt_set_wo_opt = task.prompts.targeting_prompt_set_FA_wo_opt if task.free_answer else task.prompts.targeting_prompt_set_wo_opt
+        msg = copy.deepcopy(history) + [{"role": "user", "content": targeting_prompt_set_wo_opt}]
+        
+    guesser_resp, guesser_resp_text = response(msg, model=task.guesser_model)
+    simplified_resp, simplified_resp_text = simplify_rsp(guesser_resp_text)
+    return node, simplified_resp, simplified_resp_text, False
 
 
 def get_guesser_naive_response(task, history, ques_id):
@@ -71,6 +83,7 @@ def converse(task, i):
     print(target_decl)
     print("------ DIALOGUE START ------")
     count = 0
+    state = 0
 
     if not task.free_answer:
         history_e = [{'role': 'user', 'content': task.prompts.examiner_prologue.format(item=item)}]
@@ -91,35 +104,46 @@ def converse(task, i):
                 print("Bot 2:", bot1_response)
                 history_g.append({'role': 'system', 'content': bot1_response})
                 history_e.append({'role': 'user', 'content': bot1_response})
-                bot2_response = get_examiner_response(task, history_e)
-                print("Bot 1:", bot2_response)
-                history_g.append({'role': 'user', 'content': bot2_response})
-                history_e.append({'role': 'system', 'content': bot2_response})
+                bot2_response, bot2_response_text = get_examiner_response(task, history_e)
+                print("Bot 1:", bot2_response_text)
+                history_g.append({'role': 'user', 'content': bot2_response_text})
+                history_e.append({'role': 'system', 'content': bot2_response_text})
                 count += 1
                 print('------', count, '-------------')
         node = task.root.handle_self_repo(task, history_g) if task.open_set_size > 0 else task.root
 
-    node, bot1_response, flag = get_guesser_response(task, history_g, count + 1, node)
-    print("Bot 2:", bot1_response)
+    res = get_guesser_response(task, history_g, count + 1, node)
+    if len(res) == 4:
+        node, bot1_response, bot1_response_text, flag = res
+    else:
+        node, bot1_response_text, flag = res
+    print("Bot 2:", bot1_response_text)
 
-    history_g.append({'role': 'system', 'content': bot1_response})
-    history_e.append({'role': 'user', 'content': bot1_response})
+    history_g.append({'role': 'system', 'content': bot1_response_text})
+    history_e.append({'role': 'user', 'content': bot1_response_text})
 
     while True:
-        bot2_response = get_examiner_response(task, history_e)  # chatbot 2 is the examiner
+        bot2_response, bot2_response_text = get_examiner_response(task, history_e)  # chatbot 2 is the examiner
         if task.free_answer and flag:
-            node = node.handle_free_answer(task, bot1_response, bot2_response)
-        elif bot2_response.startswith("Yes"):
+            node = node.handle_free_answer(task, bot1_response_text, bot2_response_text)
+        elif bot2_response_text.startswith("Yes"):
             node = node.ans2node(True)
-        elif bot2_response.startswith("No"):
+        elif bot2_response_text.startswith("No"):
             node = node.ans2node(False)
-        history_g.append({'role': 'user', 'content': bot2_response})
-        history_e.append({'role': 'system', 'content': bot2_response})
-        print("Bot 1:", bot2_response)
-
-        if "guessed it" in bot2_response or "are right." in bot2_response:
+        history_g.append({'role': 'user', 'content': bot2_response_text})
+        history_e.append({'role': 'system', 'content': bot2_response_text})
+        print("Bot 1:", bot2_response_text)
+        
+        response_lower = bot2_response_text.lower()
+        is_winning_phrase = "you guessed it" in response_lower or "you are right" in response_lower
+        if count > 0 and is_winning_phrase:
             state = 1
             break
+        
+
+        # if "guessed it" in bot2_response or "are right." in bot2_response:
+        #     state = 1
+        #     break
 
         count += 1
         print('------', count, '-------------')
@@ -133,16 +157,23 @@ def converse(task, i):
         if count <= int(task.max_turn*0.3) + task.n_pre_ask and task.open_set_size > 0 and len(node.items) < task.size_to_renew:
             node = renew_node_to_root(task, node, history_g)
 
-        node, bot1_response, flag = get_guesser_response(task, history_g, count + 1, node)
-        print("Bot 2:", bot1_response)
-        history_g.append({'role': 'system', 'content': bot1_response})
-        history_e.append({'role': 'user', 'content': bot1_response})
+        # node, bot1_response, bot1_response_text, flag = get_guesser_response(task, history_g, count + 1, node)
+        res = get_guesser_response(task, history_g, count + 1, node)
+        if len(res) == 4:
+            node, bot1_response, bot1_response_text, flag = res
+        else:
+            node, bot1_response_text, flag = res
+        print("Bot 2:", bot1_response_text)
+        history_g.append({'role': 'system', 'content': bot1_response_text})
+        history_e.append({'role': 'user', 'content': bot1_response_text})
 
-    if count < task.max_turn:
-        state = 1
+    # if count < task.max_turn:
+    #     state = 1
+    
+    # bot1_num_prompt_toks, bot2_num_prompt_toks = bot1_response.usage.prompt_tokens, bot2_response.usage.prompt_tokens
 
+    # return {'turn': count, 'history_g': history_g, 'history_e': history_e, 'state': state, 'item': task.data[i]["target"], "bot1_num_prompt_toks": bot1_num_prompt_toks, "bot2_num_prompt_toks": bot2_num_prompt_toks}
     return {'turn': count, 'history_g': history_g, 'history_e': history_e, 'state': state, 'item': task.data[i]["target"]}
-
 
 def naive_converse(task, i):
     item = task.data[i]["target"]
@@ -193,7 +224,7 @@ def naive_converse(task, i):
         history_g.append({'role': 'system', 'content': bot1_response})
         history_e.append({'role': 'user', 'content': bot1_response})
 
-    if count < task.max_turn:
-        state = 1
-
-    return {'turn': count, 'history_g': history_g, 'history_e': history_e, 'state': state, 'item': task.data[i]["target"]}
+    # if count < task.max_turn:
+    #     state = 1
+    
+    return {'turn': count, 'history_g': history_g, 'history_e': history_e, 'state': state, 'item': task.data[i]["target"], }

@@ -10,7 +10,7 @@ class MediQTask:
     def __init__(self, args):
         self.__dict__.update(vars(args))
         self.free_answer = True
-        self.max_turn = 5
+        self.max_turn = args.max_turn
         self.prompts = import_prompts_by_task("mediq")
         self.set = []
         self.data = self.load_dataset(args.dataset)
@@ -19,8 +19,10 @@ class MediQTask:
     def load_dataset(self, name):
         if name == "icraftmd":
             return json.loads(os.path.join(os.path.dirname(__file__), f"../data/all_craft_md.json").read())
-        elif name == "imedqa":
+        elif name == "imedqa_dev":
             return json.loads(os.path.join(os.path.dirname(__file__), f"../data/all_dev_good.json").read())
+        elif name == "imedqa_test":
+            return json.loads(os.path.join(os.path.dirname(__file__), f"../data/medqa_test_convo.json").read())
         else:
             raise NotImplementedError
         
@@ -40,9 +42,6 @@ class MediQTask:
         return list(sample["options"].values())
 
     def create_root(self, items, root=None):
-        """
-        用当前样本的 Ω 创建 UoT 的根节点
-        """
         if root is None:
             self.root = UoTNode("ROOT", True, items, None, self.guesser_model)
         else:
