@@ -17,6 +17,9 @@ def evaluate_performance(file, task):
 
     print('Dialogue Count:', cnt)
     print('Success Rate:', success / cnt)
-    print('Mean Conversation Length in Successful Cases:', success_length / success)
+
+    if success > 0:
+        print('Mean Conversation Length in Successful Cases:', success_length / success)
+
     print('Mean Conversation Length:', length / cnt)
 
