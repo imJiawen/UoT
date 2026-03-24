@@ -8,7 +8,8 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from src.uot.tasks import get_task
-from src.uot.method import converse, naive_converse
+# from src.uot.method import converse, naive_converse
+from src.uot.method import naive_converse
 from src.uot.eval import evaluate_performance
 
 
@@ -107,6 +108,7 @@ def _resolve_tokenizer_path(model_name: str) -> str | None:
         "qwen3-30b-instruct-local": "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-30B-A3B-Instruct-2507",
         "llama3.1-8b-local": "/hpc2hdd/home/mpeng885/models/LLaMa/Meta-Llama-3.1-8B-Instruct",
         "gpt_oss_20b": "/hpc2hdd/home/mpeng885/models/gpt-oss-20b",
+
         "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-4B-Thinking-2507": "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-4B-Thinking-2507",
         "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-30B-A3B-Thinking-2507": "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-30B-A3B-Thinking-2507",
         "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-4B-Instruct-2507": "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-4B-Instruct-2507",
@@ -114,6 +116,10 @@ def _resolve_tokenizer_path(model_name: str) -> str | None:
         "/hpc2hdd/home/mpeng885/models/LLaMa/Meta-Llama-3.1-8B-Instruct": "/hpc2hdd/home/mpeng885/models/LLaMa/Meta-Llama-3.1-8B-Instruct",
         "/hpc2hdd/home/mpeng885/models/gpt-oss-20b": "/hpc2hdd/home/mpeng885/models/gpt-oss-20b",
     }
+
+    # OpenAI hosted models: no local tokenizer path here
+    if model_name in {"gpt-5", "gpt-5-mini", "gpt-4", "gpt-3.5-turbo"}:
+        return None
 
     if model_name in mapping:
         return mapping[model_name]
@@ -140,7 +146,10 @@ def _load_tokenizer(args):
         except Exception as e:
             print(f"Warning: failed to load tokenizer from {tokenizer_path}: {e}")
 
-    print("Warning: no local tokenizer could be loaded. Falling back to whitespace token counting.")
+    print(
+        "Warning: no local tokenizer could be loaded for the selected models. "
+        "Falling back to approximate whitespace token counting."
+    )
     return None
 
 
@@ -348,11 +357,11 @@ def run(args):
         args.task_start_index = resumed_start
 
     for i in tqdm(range(args.task_start_index, args.task_end_index)):
-        if args.naive_run:
-            log = naive_converse(task, i)
-        else:
-            log = converse(task, i)
-            _save_root(task, root_file)
+        # if args.naive_run:
+        log = naive_converse(task, i)
+        # else:
+        #     log = converse(task, i)
+        #     _save_root(task, root_file)
 
         logs.append(log)
         _safe_save_logs(log_file, logs)

@@ -61,7 +61,7 @@ The question must start with 'Is X ...'"""
 targeting_prompt_set_wo_opt = """Note that you should guess and ask what X exactly is from now on. 
 The question must start with 'Is X ...'"""
 
-guesser_prologue = '''Let us play the game of 20 questions. I am impersonating the thing, X. You will ask me up to 20 questions which start with 'Is X' and can only be answered by yes or no, and I will answer each one truthfully based on being X.
+guesser_prologue = '''Let us play the game of 20 questions. I am impersonating the thing, X. You will ask me up to {n} questions which start with 'Is X' and can only be answered by yes or no, and I will answer each one truthfully based on being X.
 Let us begin. Ask me the first question.
 '''
 
@@ -70,11 +70,43 @@ urge_prompt = ""
 inform_prompt = "The X may be one of items below:\n{item_list_str}"
 
 
-# examiner
-examiner_prologue = '''Let us play the game of 20 questions. You are the answerer and I am guesser. X is '{item}'. 
-I will ask you up to 20 questions and you should answer each one truthfully based on being X. 
-If I guess correctly what X is, answer me "You guessed it. X is '{item}'."
-Note that never directly tell me what X is all the time.
+# # examiner
+# examiner_prologue = '''Let us play the game of 20 questions. You are the answerer and I am guesser. X is '{item}'. 
+# I will ask you up to 20 questions and you should answer each one truthfully based on being X. 
+# If I guess correctly what X is, answer me "You guessed it. X is '{item}'."
+# Note that never directly tell me what X is all the time.
+# Let us begin. Here is my first question.
+# '''
+
+examiner_prologue = '''Let us play the game of 20 questions. You are the answerer and I am the guesser. X is "{item}".
+
+You must answer each question truthfully based on being X, but you must follow this output rule strictly:
+
+Allowed responses:
+- "Yes"
+- "No"
+- "Partially"
+- "Not applicable"
+- "You guessed it. X is "{item}"."
+
+Important rules:
+1. Output exactly one of the allowed responses above.
+2. Do not add any explanation, justification, hint, clarification, punctuation, or extra words.
+3. Do not reveal any additional information about X beyond the allowed response.
+4. If the guess is exactly correct, output: "You guessed it. X is "{item}"."
+5. For all other questions, output only one of: "Yes", "No", "Partially", or "Not applicable".
+
+Examples of forbidden outputs:
+- "Yes, because it is a mammal."
+- "No. It usually lives in Africa."
+- "Partially, since that depends on context."
+
+Examples of valid outputs:
+- "Yes"
+- "No"
+- "Partially"
+- "Not applicable"
+
 Let us begin. Here is my first question.
 '''
 

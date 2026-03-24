@@ -260,175 +260,175 @@ def get_guesser_naive_response(task, history, ques_id):
     return rsp_text, thinking_text, int(think_tokens or 0)
 
 
-def converse(task, i):
-    item = task.data[i]["target"]
-    target_decl = task.prompts.target_declaration.format(target=item)
-    print(target_decl)
-    print("------ DIALOGUE START ------")
+# def converse(task, i):
+#     item = task.data[i]["target"]
+#     target_decl = task.prompts.target_declaration.format(target=item)
+#     print(target_decl)
+#     print("------ DIALOGUE START ------")
 
-    count = 0
-    state = 0
+#     count = 0
+#     state = 0
 
-    thinking_g = []
-    thinking_e = []
-    thinking_tokens_g = 0
-    thinking_tokens_e = 0
+#     thinking_g = []
+#     thinking_e = []
+#     thinking_tokens_g = 0
+#     thinking_tokens_e = 0
 
-    if not task.free_answer:
-        history_e = [{
-            'role': 'system',
-            'content': task.prompts.examiner_prologue.format(item=item)
-        }]
-    else:
-        history_e = [{
-            'role': 'system',
-            'content': task.prompts.simulator_prologue.format(
-                item=item,
-                conv_hist=task.data[i]["conv_hist"]
-            )
-        }]
+#     if not task.free_answer:
+#         history_e = [{
+#             'role': 'system',
+#             'content': task.prompts.examiner_prologue.format(item=item)
+#         }]
+#     else:
+#         history_e = [{
+#             'role': 'system',
+#             'content': task.prompts.simulator_prologue.format(
+#                 item=item,
+#                 conv_hist=task.data[i]["conv_hist"]
+#             )
+#         }]
 
-    if "self_repo" in task.data[i]:
-        guesser_prologue = (
-            task.prompts.guesser_prologue_FA if task.free_answer
-            else task.prompts.guesser_prologue
-        )
-        history_g = [{
-            'role': 'system',
-            'content': guesser_prologue.format(repo=task.data[i]["self_repo"])
-        }]
-        print("Self-report:", task.data[i]["self_repo"])
-        node = task.root.handle_self_repo(task, task.data[i]["self_repo"])
-    else:
-        history_g = [{
-            'role': 'system',
-            'content': task.prompts.guesser_prologue
-        }]
+#     if "self_repo" in task.data[i]:
+#         guesser_prologue = (
+#             task.prompts.guesser_prologue_FA if task.free_answer
+#             else task.prompts.guesser_prologue
+#         )
+#         history_g = [{
+#             'role': 'system',
+#             'content': guesser_prologue.format(repo=task.data[i]["self_repo"])
+#         }]
+#         print("Self-report:", task.data[i]["self_repo"])
+#         node = task.root.handle_self_repo(task, task.data[i]["self_repo"])
+#     else:
+#         history_g = [{
+#             'role': 'system',
+#             'content': task.prompts.guesser_prologue
+#         }]
 
-        if task.open_set_size > 0 and task.n_pre_ask > 0:
-            for _ in range(task.n_pre_ask):
-                bot1_response_text, bot1_thinking_text, bot1_think_tokens = get_guesser_naive_response(task, history_g, count + 1)
-                print("Bot 2:", bot1_response_text)
+#         if task.open_set_size > 0 and task.n_pre_ask > 0:
+#             for _ in range(task.n_pre_ask):
+#                 bot1_response_text, bot1_thinking_text, bot1_think_tokens = get_guesser_naive_response(task, history_g, count + 1)
+#                 print("Bot 2:", bot1_response_text)
 
-                if bot1_thinking_text:
-                    thinking_g.append({
-                        'turn': count + 1,
-                        'content': bot1_thinking_text,
-                        'tokens': int(bot1_think_tokens or 0),
-                    })
-                    thinking_tokens_g += int(bot1_think_tokens or 0)
+#                 if bot1_thinking_text:
+#                     thinking_g.append({
+#                         'turn': count + 1,
+#                         'content': bot1_thinking_text,
+#                         'tokens': int(bot1_think_tokens or 0),
+#                     })
+#                     thinking_tokens_g += int(bot1_think_tokens or 0)
 
-                history_g.append({'role': 'assistant', 'content': bot1_response_text})
-                history_e.append({'role': 'user', 'content': bot1_response_text})
+#                 history_g.append({'role': 'assistant', 'content': bot1_response_text})
+#                 history_e.append({'role': 'user', 'content': bot1_response_text})
 
-                _, bot2_response_text, bot2_thinking_text, bot2_think_tokens = get_examiner_response(task, history_e)
-                print("Bot 1:", bot2_response_text)
+#                 _, bot2_response_text, bot2_thinking_text, bot2_think_tokens = get_examiner_response(task, history_e)
+#                 print("Bot 1:", bot2_response_text)
 
-                if bot2_thinking_text:
-                    thinking_e.append({
-                        'turn': count + 1,
-                        'content': bot2_thinking_text,
-                        'tokens': int(bot2_think_tokens or 0),
-                    })
-                    thinking_tokens_e += int(bot2_think_tokens or 0)
+#                 if bot2_thinking_text:
+#                     thinking_e.append({
+#                         'turn': count + 1,
+#                         'content': bot2_thinking_text,
+#                         'tokens': int(bot2_think_tokens or 0),
+#                     })
+#                     thinking_tokens_e += int(bot2_think_tokens or 0)
 
-                history_e.append({'role': 'assistant', 'content': bot2_response_text})
-                history_g.append({'role': 'user', 'content': bot2_response_text})
+#                 history_e.append({'role': 'assistant', 'content': bot2_response_text})
+#                 history_g.append({'role': 'user', 'content': bot2_response_text})
 
-                count += 1
-                print('------', count, '-------------')
+#                 count += 1
+#                 print('------', count, '-------------')
 
-            node = task.root.handle_self_repo(task, history_g)
-        else:
-            node = task.root.handle_self_repo(task, history_g) if task.open_set_size > 0 else task.root
+#             node = task.root.handle_self_repo(task, history_g)
+#         else:
+#             node = task.root.handle_self_repo(task, history_g) if task.open_set_size > 0 else task.root
 
-    node, bot1_response, bot1_response_text, bot1_thinking_text, bot1_think_tokens, flag = get_guesser_response(
-        task, history_g, count + 1, node
-    )
-    print("Bot 2:", bot1_response_text)
+#     node, bot1_response, bot1_response_text, bot1_thinking_text, bot1_think_tokens, flag = get_guesser_response(
+#         task, history_g, count + 1, node
+#     )
+#     print("Bot 2:", bot1_response_text)
 
-    if bot1_thinking_text:
-        thinking_g.append({
-            'turn': count + 1,
-            'content': bot1_thinking_text,
-            'tokens': int(bot1_think_tokens or 0),
-        })
-        thinking_tokens_g += int(bot1_think_tokens or 0)
+#     if bot1_thinking_text:
+#         thinking_g.append({
+#             'turn': count + 1,
+#             'content': bot1_thinking_text,
+#             'tokens': int(bot1_think_tokens or 0),
+#         })
+#         thinking_tokens_g += int(bot1_think_tokens or 0)
 
-    history_g.append({'role': 'assistant', 'content': bot1_response_text})
-    history_e.append({'role': 'user', 'content': bot1_response_text})
+#     history_g.append({'role': 'assistant', 'content': bot1_response_text})
+#     history_e.append({'role': 'user', 'content': bot1_response_text})
 
-    while True:
-        _, bot2_response_text, bot2_thinking_text, bot2_think_tokens = get_examiner_response(task, history_e)
+#     while True:
+#         _, bot2_response_text, bot2_thinking_text, bot2_think_tokens = get_examiner_response(task, history_e)
 
-        if task.free_answer and flag:
-            node = node.handle_free_answer(task, bot1_response_text, bot2_response_text)
-        else:
-            yn = parse_yes_no(bot2_response_text)
-            if yn is True:
-                node = node.ans2node(True)
-            elif yn is False:
-                node = node.ans2node(False)
+#         if task.free_answer and flag:
+#             node = node.handle_free_answer(task, bot1_response_text, bot2_response_text)
+#         else:
+#             yn = parse_yes_no(bot2_response_text)
+#             if yn is True:
+#                 node = node.ans2node(True)
+#             elif yn is False:
+#                 node = node.ans2node(False)
 
-        if bot2_thinking_text:
-            thinking_e.append({
-                'turn': count + 1,
-                'content': bot2_thinking_text,
-                'tokens': int(bot2_think_tokens or 0),
-            })
-            thinking_tokens_e += int(bot2_think_tokens or 0)
+#         if bot2_thinking_text:
+#             thinking_e.append({
+#                 'turn': count + 1,
+#                 'content': bot2_thinking_text,
+#                 'tokens': int(bot2_think_tokens or 0),
+#             })
+#             thinking_tokens_e += int(bot2_think_tokens or 0)
 
-        history_e.append({'role': 'assistant', 'content': bot2_response_text})
-        history_g.append({'role': 'user', 'content': bot2_response_text})
-        print("Bot 1:", bot2_response_text)
+#         history_e.append({'role': 'assistant', 'content': bot2_response_text})
+#         history_g.append({'role': 'user', 'content': bot2_response_text})
+#         print("Bot 1:", bot2_response_text)
 
-        if is_winning_response(bot2_response_text):
-            state = 1
-            break
+#         if is_winning_response(bot2_response_text):
+#             state = 1
+#             break
 
-        count += 1
-        print('------', count, '-------------')
+#         count += 1
+#         print('------', count, '-------------')
 
-        if count >= task.max_turn:
-            print("Bot 1: Sorry, time's up. You lose this game.", target_decl)
-            state = -1
-            break
+#         if count >= task.max_turn:
+#             print("Bot 1: Sorry, time's up. You lose this game.", target_decl)
+#             state = -1
+#             break
 
-        if (
-            count <= int(task.max_turn * 0.3) + task.n_pre_ask
-            and task.open_set_size > 0
-            and len(node.items) < task.size_to_renew
-        ):
-            node = renew_node_to_root(task, node, history_g)
+#         if (
+#             count <= int(task.max_turn * 0.3) + task.n_pre_ask
+#             and task.open_set_size > 0
+#             and len(node.items) < task.size_to_renew
+#         ):
+#             node = renew_node_to_root(task, node, history_g)
 
-        node, bot1_response, bot1_response_text, bot1_thinking_text, bot1_think_tokens, flag = get_guesser_response(
-            task, history_g, count + 1, node
-        )
-        print("Bot 2:", bot1_response_text)
+#         node, bot1_response, bot1_response_text, bot1_thinking_text, bot1_think_tokens, flag = get_guesser_response(
+#             task, history_g, count + 1, node
+#         )
+#         print("Bot 2:", bot1_response_text)
 
-        if bot1_thinking_text:
-            thinking_g.append({
-                'turn': count + 1,
-                'content': bot1_thinking_text,
-                'tokens': int(bot1_think_tokens or 0),
-            })
-            thinking_tokens_g += int(bot1_think_tokens or 0)
+#         if bot1_thinking_text:
+#             thinking_g.append({
+#                 'turn': count + 1,
+#                 'content': bot1_thinking_text,
+#                 'tokens': int(bot1_think_tokens or 0),
+#             })
+#             thinking_tokens_g += int(bot1_think_tokens or 0)
 
-        history_g.append({'role': 'assistant', 'content': bot1_response_text})
-        history_e.append({'role': 'user', 'content': bot1_response_text})
+#         history_g.append({'role': 'assistant', 'content': bot1_response_text})
+#         history_e.append({'role': 'user', 'content': bot1_response_text})
 
-    return {
-        'index': i,
-        'turn': count,
-        'history_g': history_g,
-        'history_e': history_e,
-        'thinking_g': thinking_g,
-        'thinking_e': thinking_e,
-        'thinking_tokens_g': thinking_tokens_g,
-        'thinking_tokens_e': thinking_tokens_e,
-        'state': state,
-        'item': task.data[i]["target"]
-    }
+#     return {
+#         'index': i,
+#         'turn': count,
+#         'history_g': history_g,
+#         'history_e': history_e,
+#         'thinking_g': thinking_g,
+#         'thinking_e': thinking_e,
+#         'thinking_tokens_g': thinking_tokens_g,
+#         'thinking_tokens_e': thinking_tokens_e,
+#         'state': state,
+#         'item': task.data[i]["target"]
+#     }
 
 
 def naive_converse(task, i):
@@ -444,7 +444,7 @@ def naive_converse(task, i):
     if "self_repo" in task.data[i]:
         guesser_prologue = (
             task.prompts.guesser_prologue_FA if task.free_answer
-            else task.prompts.guesser_prologue
+            else task.prompts.guesser_prologue.format(n=task.max_turn)
         )
         history_g = [{
             'role': 'system',
@@ -454,7 +454,7 @@ def naive_converse(task, i):
     else:
         history_g = [{
             'role': 'system',
-            'content': task.prompts.guesser_prologue
+            'content': task.prompts.guesser_prologue.format(n=task.max_turn)
         }]
 
     if not task.free_answer:

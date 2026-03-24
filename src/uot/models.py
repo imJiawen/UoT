@@ -9,7 +9,12 @@ from typing import Dict, Tuple, Any, Optional
 # API keys / clients
 # ============================================================================
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+# AZURE_OPENAI_USE = bool(AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT)
+
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 CLAUDE2_API_KEY = os.getenv("CLAUDE2_API_KEY", "")
@@ -54,9 +59,14 @@ DEFAULT_GENERATION_CONFIG = {
 time_gap = {
     "gpt-4": 3,
     "gpt-3.5-turbo": 0.5,
-    "claude-3-opus-20240229": 2,
-    "claude-3-sonnet-20240229": 2,
-    "gemini-1.0-pro": 2,
+    "gpt-5": 1,
+    "gpt-5-mini": 0.5,
+    # "claude-3-opus-20240229": 2,
+    # "claude-3-sonnet-20240229": 2,
+    # "gemini-1.0-pro": 2,
+    "gemini-3.1-pro-preview": 2,
+    "gemini-3-flash-preview": 1,
+    "gemini-3.1-flash-lite-preview": 1,
     "mistral-small-latest": 1,
     "mistral-medium-latest": 1,
     "mistral-large-latest": 1,
@@ -90,10 +100,17 @@ llama_client = None
 mistral_client = None
 ChatMessage = None
 
-if OPENAI_API_KEY != "":
-    from openai import OpenAI
-    openai_client = OpenAI(api_key=OPENAI_API_KEY)
-    print(f"OPENAI_API_KEY: ****{OPENAI_API_KEY[-4:]}")
+if AZURE_OPENAI_API_KEY != "":
+    from openai import AzureOpenAI
+
+    openai_client = AzureOpenAI(
+        api_key=AZURE_OPENAI_API_KEY,
+        azure_endpoint=AZURE_OPENAI_ENDPOINT,
+        api_version="2024-10-21",
+        timeout=600,
+    )
+    print(f"AZURE_OPENAI_API_KEY: ****{AZURE_OPENAI_API_KEY[-4:]}")
+    print(f"AZURE_OPENAI_ENDPOINT: {AZURE_OPENAI_ENDPOINT}")
 
 if COHERE_API_KEY != "":
     import cohere
@@ -101,10 +118,17 @@ if COHERE_API_KEY != "":
     print(f"COHERE_API_KEY: ****{COHERE_API_KEY[-4:]}")
 
 if GOOGLE_API_KEY != "":
-    import google.generativeai as genai
-    import google.ai.generativelanguage as glm
-    genai.configure(api_key=GOOGLE_API_KEY)
-    print(f"GOOGLE_API_KEY: ****{GOOGLE_API_KEY[-4:]}")
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except ImportError:
+        genai = None
+        genai_types = None
+    else:
+        print(f"GOOGLE_API_KEY: ****{GOOGLE_API_KEY[-4:]}")
+else:
+    genai = None
+    genai_types = None
 
 if CLAUDE2_API_KEY != "":
     from anthropic import Anthropic
@@ -756,40 +780,226 @@ def unpack_model_response(ret):
 
     return None, str(ret), "", 0
 
+def _normalize_gemini_text_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                if item.get("type") == "text" and "text" in item:
+                    parts.append(str(item.get("text", "")))
+                elif "text" in item:
+                    parts.append(str(item.get("text", "")))
+        return "\n".join([p for p in parts if p])
+    return str(content)
+
+
+def _to_gemini_contents_and_system_instruction(messages):
+    contents = []
+    system_parts = []
+
+    for msg in messages:
+        role = (msg.get("role") or "user").lower()
+        text = _normalize_gemini_text_content(msg.get("content", ""))
+        if not text:
+            continue
+
+        if role == "system":
+            system_parts.append(text)
+            continue
+
+        if role == "user":
+            gemini_role = "user"
+        elif role in ("assistant", "model"):
+            gemini_role = "model"
+        elif role == "tool":
+            gemini_role = "tool"
+        else:
+            raise ValueError(f"Unsupported Gemini message role: {role}")
+
+        contents.append({
+            "role": gemini_role,
+            "parts": [{"text": text}],
+        })
+
+    system_instruction = "\n\n".join(system_parts) if system_parts else None
+    return contents, system_instruction
+
+
+def _extract_gemini_usage(resp: Any):
+    usage = getattr(resp, "usage_metadata", None)
+    if usage is None and isinstance(resp, dict):
+        usage = resp.get("usage_metadata") or resp.get("usageMetadata")
+
+    pt = ct = tt = tot = 0
+    if usage is not None:
+        pt = getattr(usage, "prompt_token_count", 0) or getattr(usage, "promptTokenCount", 0) or 0
+        ct = (
+            getattr(usage, "response_token_count", 0)
+            or getattr(usage, "responseTokenCount", 0)
+            or getattr(usage, "candidates_token_count", 0)
+            or getattr(usage, "candidatesTokenCount", 0)
+            or 0
+        )
+        tt = getattr(usage, "thoughts_token_count", 0) or getattr(usage, "thoughtsTokenCount", 0) or 0
+        tot = getattr(usage, "total_token_count", 0) or getattr(usage, "totalTokenCount", 0) or 0
+
+        if isinstance(usage, dict):
+            pt = usage.get("prompt_token_count", usage.get("promptTokenCount", pt)) or 0
+            ct = usage.get(
+                "response_token_count",
+                usage.get(
+                    "responseTokenCount",
+                    usage.get("candidates_token_count", usage.get("candidatesTokenCount", ct)),
+                ),
+            ) or 0
+            tt = usage.get("thoughts_token_count", usage.get("thoughtsTokenCount", tt)) or 0
+            tot = usage.get("total_token_count", usage.get("totalTokenCount", tot)) or 0
+
+    return int(pt), int(ct), int(tt), int(tot)
+
 
 # ============================================================================
 # Remote API model responses
 # ============================================================================
 
+def _is_gpt5_family_model(model_name: str) -> bool:
+    m = str(model_name).lower()
+    return (
+        "gpt-5" in m
+        or "gpt5" in m
+    )
+
+
+def _use_max_completion_tokens(model_name: str) -> bool:
+    flag = os.getenv("OPENAI_USE_MAX_COMPLETION_TOKENS", "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    if _is_gpt5_family_model(model_name):
+        return True
+    m = str(model_name).lower()
+    for prefix in ("o1", "o3"):
+        if m == prefix or m.startswith(prefix + "-") or m.startswith(prefix + "_"):
+            return True
+    return False
+
+
+def _error_suggests_use_max_completion_tokens(err: Exception) -> bool:
+    s = str(err).lower()
+    return (
+        "max_completion_tokens" in s
+        and "max_tokens" in s
+        and ("unsupported" in s or "not supported" in s)
+    )
+
+
+def _is_client_bad_request(err: Exception) -> bool:
+    if type(err).__name__ == "BadRequestError":
+        return True
+    sc = getattr(err, "status_code", None)
+    if sc == 400:
+        return True
+    resp = getattr(err, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) == 400:
+        return True
+    return False
+
+
 def gpt_response(
     message: list,
-    model="gpt-4",
+    model="gpt-5-mini",
     temperature=DEFAULT_GENERATION_CONFIG["temperature"],
     top_p=DEFAULT_GENERATION_CONFIG["top_p"],
     max_tokens=DEFAULT_GENERATION_CONFIG["max_tokens"],
     reasoning_effort=DEFAULT_GENERATION_CONFIG["reasoning_effort"],
 ):
     if openai_client is None:
-        raise RuntimeError("OPENAI_API_KEY is not set, but GPT model was requested.")
+        raise RuntimeError("AZURE_OPENAI_API_KEY is not set, but GPT model was requested.")
 
     _sleep_for_model(model)
-    try:
-        kwargs = {
+
+    # def _build_gpt_chat_kwargs(use_max_completion: bool) -> dict:
+    #     kwargs: Dict[str, Any] = {
+    #         "model": model,
+    #         "messages": message,
+    #     }
+    #     if use_max_completion:
+    #         kwargs["max_completion_tokens"] = max_tokens
+    #     else:
+    #         kwargs["max_tokens"] = max_tokens
+    #     if temperature is not None:
+    #         kwargs["temperature"] = temperature
+    #     if top_p is not None:
+    #         kwargs["top_p"] = top_p
+    #     if _is_gpt5_family_model(model):
+    #         kwargs["reasoning_effort"] = reasoning_effort
+    #     return kwargs
+
+    def _build_gpt_chat_kwargs(use_max_completion: bool) -> dict:
+        kwargs: Dict[str, Any] = {
             "model": model,
             "messages": message,
-            "temperature": temperature,
-            "n": 1,
-            "max_tokens": max_tokens,
         }
-        if top_p is not None:
-            kwargs["top_p"] = top_p
 
-        res = openai_client.chat.completions.create(**kwargs)
+        if use_max_completion:
+            kwargs["max_completion_tokens"] = max_tokens
+        else:
+            kwargs["max_tokens"] = max_tokens
+
+        # GPT-5 family on Azure/OpenAI reasoning endpoints:
+        # do not send temperature/top_p unless you are sure the deployment supports them.
+        if not _is_gpt5_family_model(model):
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            if top_p is not None:
+                kwargs["top_p"] = top_p
+
+        if _is_gpt5_family_model(model):
+            kwargs["reasoning_effort"] = reasoning_effort
+
+        return kwargs
+
+    def _create_chat_completion(kwargs: dict):
         try:
-            text = res.choices[0].message.content
-        except Exception:
-            text = res.choices[0].text
-        return res, text, "", 0
+            return openai_client.chat.completions.create(**kwargs)
+        except TypeError:
+            if "reasoning_effort" in kwargs:
+                reff = kwargs.pop("reasoning_effort")
+                kwargs["extra_body"] = {"reasoning_effort": reff}
+            return openai_client.chat.completions.create(**kwargs)
+
+    use_mct = _use_max_completion_tokens(model)
+    kwargs = _build_gpt_chat_kwargs(use_mct)
+
+    try:
+        res = _create_chat_completion(dict(kwargs))
+    except Exception as e:
+        if not use_mct and _error_suggests_use_max_completion_tokens(e):
+            retry_kwargs = _build_gpt_chat_kwargs(True)
+            res = _create_chat_completion(dict(retry_kwargs))
+        elif _is_client_bad_request(e):
+            raise
+        else:
+            print(e)
+            time.sleep(time_gap.get(model, 3) * 2)
+            return gpt_response(message, model, temperature, top_p, max_tokens, reasoning_effort)
+
+    try:
+        text = res.choices[0].message.content
+
+        usage = getattr(res, "usage", None)
+        num_thinking_tokens = 0
+        if usage is not None:
+            details = getattr(usage, "completion_tokens_details", None)
+            if details is not None:
+                num_thinking_tokens = int(getattr(details, "reasoning_tokens", 0) or 0)
+            else:
+                num_thinking_tokens = int(getattr(usage, "reasoning_tokens", 0) or 0)
+
+        return res, text, "", num_thinking_tokens
     except Exception as e:
         print(e)
         time.sleep(time_gap.get(model, 3) * 2)
@@ -835,25 +1045,51 @@ def palm_response(
 
 def gemini_response(
     message: list,
-    model="gemini-1.0-pro",
+    model="gemini-3-flash-preview",
     temperature=DEFAULT_GENERATION_CONFIG["temperature"],
     top_p=DEFAULT_GENERATION_CONFIG["top_p"],
     max_tokens=DEFAULT_GENERATION_CONFIG["max_tokens"],
     reasoning_effort=DEFAULT_GENERATION_CONFIG["reasoning_effort"],
 ):
-    if genai is None or glm is None:
-        raise RuntimeError("GOOGLE_API_KEY is not set, but Gemini model was requested.")
+    if genai is None:
+        raise RuntimeError("GOOGLE_API_KEY is not set or google-genai is not installed, but Gemini model was requested.")
 
-    genai_model = genai.GenerativeModel(model_name=model)
     try:
-        chat = genai_model.start_chat()
-        res = chat.send_message(message[-1]["content"])
-        return res, res.text, "", 0
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        contents, system_instruction = _to_gemini_contents_and_system_instruction(message)
+
+        if not contents:
+            raise ValueError("No non-system messages found for Gemini request.")
+
+        config_kwargs = {
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+        }
+        if system_instruction:
+            config_kwargs["system_instruction"] = system_instruction
+
+        if genai_types is not None:
+            gen_config = genai_types.GenerateContentConfig(**config_kwargs)
+        else:
+            gen_config = config_kwargs
+
+        resp = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=gen_config,
+        )
+
+        text = getattr(resp, "text", None)
+        if text is None:
+            text = str(resp)
+
+        pt, ct, tt, tot = _extract_gemini_usage(resp)
+        return resp, text, "", tt
+
     except Exception as e:
         print(e)
         time.sleep(3)
         return gemini_response(message, model, temperature, top_p, max_tokens, reasoning_effort)
-
 
 def claude_aiproxy_response(
     message,
@@ -1224,6 +1460,11 @@ def get_response_method(model):
 
         "qwen_4b": qwen_response,
         "qwen_30b": qwen_response,
+
+        "gpt-5": gpt_response,
+        "gpt-5-mini": gpt_response,
+        "gpt-5.4": gpt_response,
+        "gpt-5.2": gpt_response,
     }
 
     if model in exact_methods:
