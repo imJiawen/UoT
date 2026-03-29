@@ -219,16 +219,31 @@ def get_guesser_response(task, history, ques_id, node):
 def get_guesser_naive_response(task, history, ques_id):
     response_fn = get_response_method(task.guesser_model)
 
+    is_final_turn = ques_id >= task.max_turn
+
     msg = copy.deepcopy(history)
     prompt = ""
-    if ques_id > int(task.max_turn * 0.7):
-        prompt += task.prompts.urge_prompt
+
+    if is_final_turn:
+        # 最后一轮：强制直接猜，不再问问题
         if task.inform:
-            prompt += task.prompts.inform_prompt.format(item_list_str=', '.join(task.set))
-    prompt += "\nYou must reply me with 1 question to ask only."
+            prompt += task.prompts.final_guess_prompt_inform.format(
+                item_list_str=', '.join(task.set)
+            )
+        else:
+            prompt += task.prompts.final_guess_prompt
+    else:
+        # 非最后一轮：正常问问题
+        if ques_id > int(task.max_turn * 0.7):
+            prompt += task.prompts.urge_prompt
+            if task.inform:
+                prompt += task.prompts.inform_prompt.format(
+                    item_list_str=', '.join(task.set)
+                )
+        prompt += "\nYou must reply with exactly one question only."
 
     if len(msg) == 0:
-        msg = [{"role": "system", "content": ""}]
+        msg = [{"role": "system", "content": prompt.strip()}]
     else:
         msg[-1]["content"] += " " + prompt
 
@@ -251,8 +266,25 @@ def get_guesser_naive_response(task, history, ques_id):
         )
         return extracted_text, extract_thinking, extract_think_tokens
 
+    def extract_guess(text: str) -> Tuple[str, str, int]:
+        examiner_fn = get_response_method(task.examiner_model)
+        message = [{
+            "role": "user",
+            "content": task.prompts.extract_guess_prompt.format(rsp=text)
+        }]
+        _, extracted_text, extract_thinking, extract_think_tokens = _call_model(
+            examiner_fn,
+            message,
+            model=task.examiner_model
+        )
+        return extracted_text, extract_thinking, extract_think_tokens
+
     if len(rsp_text.split()) > task.expected_action_tokens:
-        extracted_text, extract_thinking, extract_think_tokens = extract_ques(rsp_text)
+        if is_final_turn:
+            extracted_text, extract_thinking, extract_think_tokens = extract_guess(rsp_text)
+        else:
+            extracted_text, extract_thinking, extract_think_tokens = extract_ques(rsp_text)
+
         merged_thinking = "\n".join(x for x in [thinking_text, extract_thinking] if x).strip()
         merged_think_tokens = int(think_tokens or 0) + int(extract_think_tokens or 0)
         return extracted_text, merged_thinking, merged_think_tokens

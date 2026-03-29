@@ -61,9 +61,28 @@ The question must start with 'Is X ...'"""
 targeting_prompt_set_wo_opt = """Note that you should guess and ask what X exactly is from now on. 
 The question must start with 'Is X ...'"""
 
-guesser_prologue = '''Let us play the game of 20 questions. I am impersonating the thing, X. You will ask me up to {n} questions which start with 'Is X' and can only be answered by yes or no, and I will answer each one truthfully based on being X.
+# guesser_prologue = '''Let us play the game of 20 questions. I am impersonating the thing, X. You will ask me up to {n} questions which start with 'Is X' and can only be answered by yes or no, and I will answer each one truthfully based on being X.
+# Let us begin. Ask me the first question.
+# '''
+
+guesser_prologue = """
+Let us play the game of 20 questions. I am impersonating the thing, X.
+
+Your goal is to identify X within at most {n} turns.
+
+Rules:
+1. Ask exactly one question only.
+2. Each question should start with "Is X" whenever possible.
+3. Do not ask more than one question in a turn.
+4. Do not add explanation, justification, or extra text.
+5. If this is the final turn, do not ask a question. Instead, make exactly one final guess.
+
+Final-turn output rule:
+- On the final turn, output only:
+  X is "<your best guess>".
+
 Let us begin. Ask me the first question.
-'''
+"""
 
 urge_prompt = ""
 
@@ -117,3 +136,46 @@ Your response should be: ["thing1", "thing2", ...]'''
 renew_open_set_prompt = '''Based on the conversation history, please propose {size} things that the answerer of 20 question game might have in mind.
 The list of {size} things should contains {item_list}
 Your response should be: ["thing1", "thing2", ...]'''
+
+final_guess_prompt = """
+This is the final turn.
+You must stop asking questions and make exactly one final guess now.
+
+Output format:
+X is "<your best guess>".
+
+Do not ask a question.
+Do not add any explanation.
+Do not output anything else.
+"""
+
+final_guess_prompt_inform = """
+This is the final turn.
+You must stop asking questions and make exactly one final guess now.
+
+Possible candidates:
+{item_list_str}
+
+Output format:
+X is "<your best guess>".
+
+Do not ask a question.
+Do not add any explanation.
+Do not output anything else.
+"""
+
+
+extract_guess_prompt = """
+Rewrite the following response into exactly one final guess in this format:
+
+X is "<guess>".
+
+Rules:
+1. Output exactly one line.
+2. Do not output a question.
+3. Do not add explanation or extra words.
+4. Keep only the guessed entity.
+
+Response:
+{rsp}
+"""
