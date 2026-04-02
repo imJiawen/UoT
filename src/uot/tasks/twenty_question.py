@@ -11,6 +11,12 @@ class Q20Task:
         self.set = []
         self.data = self.load_dataset(args.dataset)
         self.root = None
+        self.examiner_mode = args.examiner_mode
+        self.oracle_pool = args.oracle_pool
+        self.oracle_judge_model = args.oracle_judge_model
+        self.oracle_base_url = args.oracle_base_url
+        self.oracle_api_key = args.oracle_api_key
+        self.oracle_cache_path = args.oracle_cache_path
 
     def load_dataset(self, name):
         from src.uot.data.data_20q import BIG_BENCH_CONCEPT, COMMON, THING200

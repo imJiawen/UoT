@@ -1,4 +1,14 @@
 import os
+import sys
+from pathlib import Path
+
+# run.py lives at external/UoT/run.py; repo root is two levels up (contains `reasoning/`).
+# Python only adds external/UoT to sys.path by default, so `reasoning.*` would not resolve.
+_reasoning_root = Path(__file__).resolve().parent.parent.parent
+_root = str(_reasoning_root)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
 import json
 import argparse
 import pickle
@@ -7,11 +17,13 @@ from typing import Any, List, Dict
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
+from reasoning.evaluate.twenty_question.offline_evaluator import LocalVLLMJudge
 from src.uot.tasks import get_task
-# from src.uot.method import converse, naive_converse
 from src.uot.method import naive_converse
 from src.uot.eval import evaluate_performance
 
+from src.uot.oracle_examiner import ComparativeEntropyOracle, OracleConfig
+from src.uot.models import get_local_model_config
 
 def _safe_load_logs(log_file: str) -> List[Dict[str, Any]]:
     if not os.path.exists(log_file):
@@ -37,11 +49,18 @@ def _safe_save_logs(log_file: str, logs: List[Dict[str, Any]]) -> None:
 
 
 def _build_log_file(args) -> str:
+    examiner_tag = args.examiner_model
+    oracle_tag_model = args.oracle_judge_model if str(args.oracle_judge_model).strip() else "oracle_judge"
+
+    if args.examiner_mode != "fixed":
+        # examiner_tag = f"{args.examiner_mode}_{args.oracle_pool}_{oracle_tag_model.replace('/', '_')}"
+        examiner_tag = f"{args.examiner_mode}_{oracle_tag_model.replace('/', '_')}"
+
     if args.naive_run:
         log_file = (
             f'./logs/{args.task}/{args.guesser_model}_as_guesser/'
             f'{args.dataset}_'
-            f'examiner_{args.examiner_model}_{"" if args.inform else "un"}inform'
+            f'examiner_{examiner_tag}_{"" if args.inform else "un"}inform'
             f'_maxturn{args.max_turn}_{args.task_start_index}-{args.task_end_index}{args.add_info}.json'
         )
     else:
@@ -51,7 +70,7 @@ def _build_log_file(args) -> str:
             f'{f"pre{args.n_pre_ask}_" if args.n_pre_ask > 0 else ""}'
             f'{args.dataset}_{args.temperature}_lambda{args.reward_lambda}_acc{not args.none_acc_reward}'
             f'_exp{args.expected_reward_method}_L{args.n_extend_layers}_K{args.n_potential_actions}'
-            f'_PRUN{args.n_pruned_nodes}_{"" if args.inform else "un"}inform_EXAMINER{args.examiner_model}'
+            f'_PRUN{args.n_pruned_nodes}_{"" if args.inform else "un"}inform_EXAMINER{examiner_tag}'
             f'_maxturn{args.max_turn}_{args.task_start_index}-{args.task_end_index}{args.add_info}.json'
         )
     return log_file
@@ -117,7 +136,6 @@ def _resolve_tokenizer_path(model_name: str) -> str | None:
         "/hpc2hdd/home/mpeng885/models/gpt-oss-20b": "/hpc2hdd/home/mpeng885/models/gpt-oss-20b",
     }
 
-    # OpenAI hosted models: no local tokenizer path here
     if model_name in {"gpt-5", "gpt-5-mini", "gpt-4", "gpt-3.5-turbo"}:
         return None
 
@@ -126,9 +144,39 @@ def _resolve_tokenizer_path(model_name: str) -> str | None:
 
     return None
 
+def _resolve_oracle_judge_model_and_base_url(args) -> tuple[str, str]:
+    """
+    Resolve oracle_judge_model so that aliases in src.uot.models also work.
+
+    Returns:
+        resolved_model_name_for_vllm, resolved_base_url
+    """
+    raw_model = str(args.oracle_judge_model).strip() if args.oracle_judge_model is not None else ""
+    raw_base_url = str(args.oracle_base_url).strip()
+
+    if not raw_model:
+        raise ValueError("oracle_judge_model must be provided for oracle mode.")
+
+    local_cfg = get_local_model_config(raw_model)
+    if local_cfg is not None:
+        # Alias or full local path recognized by models.py
+        resolved_model = local_cfg.served_model_name
+        resolved_base_url = raw_base_url if raw_base_url else local_cfg.base_url
+        return resolved_model, resolved_base_url
+
+    # otherwise leave untouched, for example:
+    # - remote API-exposed model names
+    # - explicit full model identifiers already matching the server
+    return raw_model, raw_base_url
 
 def _load_tokenizer(args):
-    candidate_models = [args.guesser_model, args.examiner_model]
+    candidate_models = [args.guesser_model]
+
+    if args.examiner_mode == "fixed":
+        candidate_models.append(args.examiner_model)
+    else:
+        resolved_oracle_model, _ = _resolve_oracle_judge_model_and_base_url(args)
+        candidate_models.append(resolved_oracle_model)
 
     for model_name in candidate_models:
         tokenizer_path = _resolve_tokenizer_path(model_name)
@@ -151,7 +199,6 @@ def _load_tokenizer(args):
         "Falling back to approximate whitespace token counting."
     )
     return None
-
 
 def _count_tokens(text: Any, tokenizer) -> int:
     if text is None:
@@ -181,6 +228,10 @@ def _extract_cot_logs(logs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "thinking_e": l.get("thinking_e", []),
             "thinking_tokens_g": l.get("thinking_tokens_g", 0),
             "thinking_tokens_e": l.get("thinking_tokens_e", 0),
+            "oracle_state": l.get("oracle_state"),
+            "oracle_final_target": l.get("oracle_final_target"),
+            "oracle_mode": l.get("oracle_mode"),
+            "oracle_pool_name": l.get("oracle_pool_name"),
         })
     return cot_logs
 
@@ -210,31 +261,30 @@ def _compute_metrics(logs: List[Dict[str, Any]], tokenizer) -> Dict[str, Any]:
             "num_success": 0,
             "accuracy": 0.0,
             "avg_turn": 0.0,
-
             "total_guess_prompt_tokens": 0,
             "total_guess_output_visible_tokens": 0,
             "total_guess_thinking_tokens": 0,
             "total_guess_output_tokens": 0,
             "total_guess_tokens": 0,
-
             "total_exam_prompt_tokens": 0,
             "total_exam_output_visible_tokens": 0,
             "total_exam_thinking_tokens": 0,
             "total_exam_output_tokens": 0,
             "total_exam_tokens": 0,
-
             "avg_guess_prompt_tokens": 0,
             "avg_guess_output_visible_tokens": 0,
             "avg_guess_thinking_tokens": 0,
-
             "avg_exam_prompt_tokens": 0,
             "avg_exam_output_visible_tokens": 0,
             "avg_exam_thinking_tokens": 0,
+            "avg_oracle_final_entropy": 0.0,
         }
 
     num_success = sum(1 for l in logs if l.get("state") == 1)
     accuracy = num_success / num_samples
     avg_turn = sum(l.get("turn", 0) for l in logs) / num_samples
+
+    oracle_final_entropies = []
 
     for l in logs:
         history_g = l.get("history_g", [])
@@ -291,6 +341,10 @@ def _compute_metrics(logs: List[Dict[str, Any]], tokenizer) -> Dict[str, Any]:
                 total_exam_thinking += _count_tokens(content, tokenizer)
                 num_exam_thinking_msgs += 1
 
+        oracle_state = l.get("oracle_state")
+        if isinstance(oracle_state, dict) and oracle_state.get("final_entropy") is not None:
+            oracle_final_entropies.append(float(oracle_state["final_entropy"]))
+
     total_guess_output_tokens = total_guess_output_visible + total_guess_thinking
     total_exam_output_tokens = total_exam_output_visible + total_exam_thinking
 
@@ -319,12 +373,73 @@ def _compute_metrics(logs: List[Dict[str, Any]], tokenizer) -> Dict[str, Any]:
         "avg_exam_prompt_tokens": total_exam_prompt / num_exam_prompt_msgs if num_exam_prompt_msgs else 0,
         "avg_exam_output_visible_tokens": total_exam_output_visible / num_exam_output_visible_msgs if num_exam_output_visible_msgs else 0,
         "avg_exam_thinking_tokens": total_exam_thinking / num_exam_thinking_msgs if num_exam_thinking_msgs else 0,
+
+        "avg_oracle_final_entropy": (
+            sum(oracle_final_entropies) / len(oracle_final_entropies)
+            if oracle_final_entropies else 0.0
+        ),
     }
     return metrics
 
 
+def _attach_runtime_config_to_task(task, args):
+    resolved_oracle_model, resolved_oracle_base_url = _resolve_oracle_judge_model_and_base_url(args)
+
+    task.examiner_mode = args.examiner_mode
+    task.oracle_pool = args.oracle_pool
+    task.oracle_judge_model = resolved_oracle_model
+    task.oracle_base_url = resolved_oracle_base_url
+    task.oracle_api_key = args.oracle_api_key
+    task.oracle_cache_path = args.oracle_cache_path
+    task.oracle_match_prob = args.oracle_match_prob
+    task.oracle_mismatch_prob = args.oracle_mismatch_prob
+    task.oracle_pass_prob = args.oracle_pass_prob
+    task.oracle_judge_batch_size = args.oracle_judge_batch_size
+    task.oracle_topk_prune = args.oracle_topk_prune
+    task.oracle_support_top_mass = args.oracle_support_top_mass
+    task.oracle_support_min_prob = args.oracle_support_min_prob
+    task.oracle_force_include_topk = args.oracle_force_include_topk
+    task.oracle_examiner = None
+
+def _build_oracle_examiner_if_needed(task):
+    if getattr(task, "examiner_mode", "fixed") == "fixed":
+        task.oracle_examiner = None
+        return
+
+    mode = "adv" if task.examiner_mode == "adv_oracle" else "cop"
+
+    judge = LocalVLLMJudge(
+        model=task.oracle_judge_model,
+        base_url=task.oracle_base_url,
+        api_key=task.oracle_api_key,
+        cache_path=task.oracle_cache_path,
+        temperature=0.0,
+        max_tokens=32768,
+        sleep_s=0.0,
+        timeout=120.0,
+        max_retries=5,
+    )
+
+    task.oracle_examiner = ComparativeEntropyOracle(
+        cfg=OracleConfig(
+            pool_name=task.oracle_pool,
+            mode=mode,
+            match_prob=task.oracle_match_prob,
+            mismatch_prob=task.oracle_mismatch_prob,
+            pass_prob=task.oracle_pass_prob,
+            judge_batch_size=task.oracle_judge_batch_size,
+            topk_prune=task.oracle_topk_prune,
+            support_top_mass=task.oracle_support_top_mass,
+            support_min_prob=task.oracle_support_min_prob,
+            force_include_topk=task.oracle_force_include_topk,
+        ),
+        judge=judge,
+    )
+
+
 def run(args):
     task = get_task(args)
+    _attach_runtime_config_to_task(task, args)
 
     original_start_index = max(args.task_start_index, 0)
     args.task_start_index = original_start_index
@@ -357,17 +472,20 @@ def run(args):
         args.task_start_index = resumed_start
 
     for i in tqdm(range(args.task_start_index, args.task_end_index)):
-        # if args.naive_run:
+        _build_oracle_examiner_if_needed(task)
+
         log = naive_converse(task, i)
-        # else:
-        #     log = converse(task, i)
-        #     _save_root(task, root_file)
 
         logs.append(log)
         _safe_save_logs(log_file, logs)
 
         cot_logs = _extract_cot_logs(logs)
         _safe_save_logs(cot_log_file, cot_logs)
+
+        if getattr(task, "oracle_examiner", None) is not None:
+            flush = getattr(task.oracle_examiner.judge, "flush", None)
+            if callable(flush):
+                flush()
 
     evaluate_performance(log_file, task)
 
@@ -390,6 +508,28 @@ def parse_args():
     args.add_argument('--examiner_model', type=str, default='qwen')
 
     args.add_argument(
+        '--examiner_mode',
+        type=str,
+        default='fixed',
+        choices=['fixed', 'adv_oracle', 'cop_oracle']
+    )
+    args.add_argument('--oracle_pool', type=str, default='common')
+    # args.add_argument('--oracle_judge_model', type=str, default='/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-30B-A3B-Instruct-2507')
+    args.add_argument('--oracle_judge_model', type=str, default='')
+    args.add_argument('--oracle_base_url', type=str, default='http://127.0.0.1:8000/v1')
+    args.add_argument('--oracle_api_key', type=str, default='EMPTY')
+    args.add_argument('--oracle_cache_path', type=str, default='judge_cache.json')
+    args.add_argument('--oracle_match_prob', type=float, default=0.98)
+    args.add_argument('--oracle_mismatch_prob', type=float, default=0.02)
+    args.add_argument('--oracle_pass_prob', type=float, default=0.50)
+    args.add_argument('--oracle_judge_batch_size', type=int, default=8)
+    args.add_argument('--oracle_topk_prune', type=int, default=0)
+
+    args.add_argument('--oracle_support_top_mass', type=float, default=0.95)
+    args.add_argument('--oracle_support_min_prob', type=float, default=1e-4)
+    args.add_argument('--oracle_force_include_topk', type=int, default=20)
+
+    args.add_argument(
         '--task',
         type=str,
         default='20q',
@@ -399,7 +539,7 @@ def parse_args():
         '--dataset',
         type=str,
         default='common',
-        choices=['bigbench', 'common', 'thing', 'DX', 'MedDG', 'FloDial', 'icraftmd', 'imedqa']
+        choices=['common', 'thing', 'bigbench']
     )
     args.add_argument('--task_start_index', type=int, default=-1)
     args.add_argument('--task_end_index', type=int, default=-1)

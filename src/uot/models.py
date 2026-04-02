@@ -3,17 +3,15 @@ import time
 import copy
 import re
 from dataclasses import dataclass
-from typing import Dict, Tuple, Any, Optional
+from typing import Dict, Tuple, Any, Optional, List
+
 
 # ============================================================================
 # API keys / clients
 # ============================================================================
 
-# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
-# AZURE_OPENAI_USE = bool(AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT)
 
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
@@ -43,6 +41,7 @@ QWEN_INSTRUCT_30B_API_KEY = os.getenv("QWEN_INSTRUCT_30B_API_KEY", "")
 QWEN_INSTRUCT_30B_IP = os.getenv("QWEN_INSTRUCT_30B_IP", "")
 QWEN_INSTRUCT_30B_PORT = os.getenv("QWEN_INSTRUCT_30B_PORT", "")
 
+
 # ============================================================================
 # Unified generation defaults
 # ============================================================================
@@ -61,9 +60,6 @@ time_gap = {
     "gpt-3.5-turbo": 0.5,
     "gpt-5": 1,
     "gpt-5-mini": 0.5,
-    # "claude-3-opus-20240229": 2,
-    # "claude-3-sonnet-20240229": 2,
-    # "gemini-1.0-pro": 2,
     "gemini-3.1-pro-preview": 2,
     "gemini-3-flash-preview": 1,
     "gemini-3.1-flash-lite-preview": 1,
@@ -99,6 +95,7 @@ claude_client = None
 llama_client = None
 mistral_client = None
 ChatMessage = None
+genai_types = None
 
 if AZURE_OPENAI_API_KEY != "":
     from openai import AzureOpenAI
@@ -191,6 +188,7 @@ if GPT_OSS_20B_API_KEY != "" and GPT_OSS_20B_IP != "" and GPT_OSS_20B_PORT != ""
     )
     print(f"GPT_OSS_20B_API_KEY: ****{GPT_OSS_20B_API_KEY[-4:]}")
 
+
 # ============================================================================
 # Model config
 # ============================================================================
@@ -242,6 +240,7 @@ LOCAL_MODEL_ALIASES = {
     "qwen3-30b-local": "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-30B-A3B-Thinking-2507",
     "llama3.1-8b-local": "/hpc2hdd/home/mpeng885/models/LLaMa/Meta-Llama-3.1-8B-Instruct",
     "qwen3-30b-instruct-local": "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "qwen_instruct_30b": "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-30B-A3B-Instruct-2507",
 }
 
 REMOTE_QWEN_SPECS = {
@@ -357,6 +356,7 @@ LOCAL_MODEL_CONFIGS["/hpc2hdd/home/mpeng885/models/LLaMa/Meta-Llama-3.1-8B-Instr
 _LOCAL_CLIENT_CACHE: Dict[str, Any] = {}
 _TOKENIZER_CACHE: Dict[str, Any] = {}
 
+
 # ============================================================================
 # Helpers
 # ============================================================================
@@ -392,17 +392,147 @@ def _get_or_create_openai_client(base_url: str, api_key: str = "EMPTY"):
     return _LOCAL_CLIENT_CACHE[cache_key]
 
 
-def _load_tokenizer_cached(tokenizer_path: str):
+def _looks_like_local_path(path: str) -> bool:
+    if not isinstance(path, str) or not path.strip():
+        return False
+    path = path.strip()
+    return (
+        path.startswith("/")
+        or path.startswith("./")
+        or path.startswith("../")
+        or path.startswith("~/")
+    )
+
+
+def _is_hf_repo_id(s: str) -> bool:
+    if not isinstance(s, str) or not s.strip():
+        return False
+    s = s.strip()
+    if _looks_like_local_path(s):
+        return False
+    return "/" in s or "-" in s or "_" in s
+
+
+def _build_fallback_chat_prompt(message: List[dict]) -> str:
+    text = ""
+    for m in message:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        text += f"{role}: {content}\n"
+    text += "assistant: "
+    return text
+
+
+# When tokenizer/model paths use cluster locations under /hpc2hdd/...,
+# local dev machines may not have them. Map those paths to Hub ids.
+_TOKENIZER_HUB_FALLBACK: Dict[str, str] = {
+    "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-4B-Instruct-2507": "Qwen/Qwen3-4B-Instruct-2507",
+    "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-4B-Thinking-2507": "Qwen/Qwen3-4B-Thinking-2507",
+    "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-30B-A3B-Thinking-2507": "Qwen/Qwen3-30B-A3B-Thinking-2507",
+    "/hpc2hdd/home/mpeng885/models/Qwen/Qwen3-30B-A3B-Instruct-2507": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "/hpc2hdd/home/mpeng885/models/gpt-oss-20b": "openai/gpt-oss-20b",
+    "/hpc2hdd/home/mpeng885/models/LLaMa/Meta-Llama-3.1-8B-Instruct": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+}
+
+
+def _resolve_tokenizer_pretrained_spec(tokenizer_path: str) -> Tuple[str, bool]:
+    """
+    Returns (pretrained_model_name_or_path, local_files_only).
+
+    Order:
+    1. real local dir
+    2. UOT_LOCAL_TOKENIZER_ROOT + suffix after .../models/
+    3. explicit Hub fallback
+    4. heuristic Hub fallback by basename
+    """
+    if not tokenizer_path:
+        raise ValueError("tokenizer_path is empty")
+
+    expanded = os.path.expanduser(tokenizer_path)
+    if os.path.isdir(expanded):
+        return expanded, True
+
+    root = os.getenv("UOT_LOCAL_TOKENIZER_ROOT", "").strip()
+    if root:
+        root_exp = os.path.expanduser(root)
+        rel = None
+        for marker in ("/models/", "\\models\\"):
+            if marker in tokenizer_path:
+                rel = tokenizer_path.split(marker, 1)[1].replace("\\", "/")
+                break
+        if rel:
+            candidate = os.path.join(root_exp, *rel.split("/"))
+            if os.path.isdir(candidate):
+                return candidate, True
+
+    if tokenizer_path in _TOKENIZER_HUB_FALLBACK:
+        return _TOKENIZER_HUB_FALLBACK[tokenizer_path], False
+
+    base = os.path.basename(os.path.normpath(tokenizer_path))
+    lower = base.lower()
+    if "gpt-oss" in lower:
+        return "openai/gpt-oss-20b", False
+    if lower.startswith("qwen") or "qwen" in lower:
+        return f"Qwen/{base}", False
+    if "llama" in lower:
+        return f"meta-llama/{base}", False
+
+    raise OSError(
+        f"Tokenizer path does not exist locally: {tokenizer_path!r}. "
+        "Clone the tokenizer locally, set UOT_LOCAL_TOKENIZER_ROOT to the parent of the "
+        "`models` folder that mirrors the cluster layout, or extend _TOKENIZER_HUB_FALLBACK."
+    )
+
+
+def _load_tokenizer_cached(tokenizer_path: str, allow_remote_fallback: bool = False):
     from transformers import AutoTokenizer
 
-    if tokenizer_path not in _TOKENIZER_CACHE:
-        _TOKENIZER_CACHE[tokenizer_path] = AutoTokenizer.from_pretrained(
-            tokenizer_path,
+    cache_key = f"{tokenizer_path}|remote={allow_remote_fallback}"
+    if cache_key in _TOKENIZER_CACHE:
+        return _TOKENIZER_CACHE[cache_key]
+
+    try:
+        load_target, local_only = _resolve_tokenizer_pretrained_spec(tokenizer_path)
+        tok = AutoTokenizer.from_pretrained(
+            load_target,
             trust_remote_code=True,
-            local_files_only=True,
+            local_files_only=local_only,
             cache_dir=HUGGINGFACE_HUB_CACHE if HUGGINGFACE_HUB_CACHE else None,
         )
-    return _TOKENIZER_CACHE[tokenizer_path]
+        _TOKENIZER_CACHE[cache_key] = tok
+        return tok
+    except Exception as e:
+        print(f"Warning: failed to resolve tokenizer via local/root/hub fallback for {tokenizer_path}: {e}")
+
+    expanded_path = os.path.expanduser(tokenizer_path)
+    if os.path.isdir(expanded_path):
+        try:
+            tok = AutoTokenizer.from_pretrained(
+                expanded_path,
+                trust_remote_code=True,
+                local_files_only=True,
+                cache_dir=HUGGINGFACE_HUB_CACHE if HUGGINGFACE_HUB_CACHE else None,
+            )
+            _TOKENIZER_CACHE[cache_key] = tok
+            return tok
+        except Exception as e:
+            print(f"Warning: failed to load local tokenizer from {expanded_path}: {e}")
+
+    if allow_remote_fallback and _is_hf_repo_id(tokenizer_path):
+        try:
+            tok = AutoTokenizer.from_pretrained(
+                tokenizer_path,
+                trust_remote_code=True,
+                local_files_only=False,
+                cache_dir=HUGGINGFACE_HUB_CACHE if HUGGINGFACE_HUB_CACHE else None,
+            )
+            _TOKENIZER_CACHE[cache_key] = tok
+            return tok
+        except Exception as e:
+            print(f"Warning: failed to load remote tokenizer from repo {tokenizer_path}: {e}")
+
+    _TOKENIZER_CACHE[cache_key] = None
+    return None
 
 
 def _count_tokens_with_tokenizer(text: str, tokenizer=None) -> int:
@@ -438,6 +568,9 @@ def _get_remote_qwen_client(model: str):
 
 
 def _apply_chat_template_safely(tokenizer, message, family: str, enable_reasoning: bool = True):
+    if tokenizer is None:
+        return _build_fallback_chat_prompt(message)
+
     if family == "qwen":
         if enable_reasoning:
             try:
@@ -479,13 +612,7 @@ def _apply_chat_template_safely(tokenizer, message, family: str, enable_reasonin
     except TypeError:
         pass
 
-    text = ""
-    for m in message:
-        role = m.get("role", "user")
-        content = m.get("content", "")
-        text += f"{role}: {content}\n"
-    text += "assistant: "
-    return text
+    return _build_fallback_chat_prompt(message)
 
 
 def _strip_start_token(text: str, start_token: str) -> str:
@@ -727,7 +854,16 @@ def _generate_vllm_completion(
     max_tokens=DEFAULT_GENERATION_CONFIG["max_tokens"],
     reasoning_effort=DEFAULT_GENERATION_CONFIG["reasoning_effort"],
 ):
-    tokenizer = _load_tokenizer_cached(config.tokenizer_name_or_path)
+    allow_remote_tokenizer_fallback = (
+        os.getenv("ALLOW_REMOTE_TOKENIZER_FALLBACK", "0").strip().lower()
+        in {"1", "true", "yes"}
+    )
+
+    tokenizer = _load_tokenizer_cached(
+        config.tokenizer_name_or_path,
+        allow_remote_fallback=allow_remote_tokenizer_fallback,
+    )
+
     raw_prompt_text = _apply_chat_template_safely(
         tokenizer,
         message,
@@ -779,6 +915,7 @@ def unpack_model_response(ret):
         return None, ret, "", 0
 
     return None, str(ret), "", 0
+
 
 def _normalize_gemini_text_content(content: Any) -> str:
     if isinstance(content, str):
@@ -868,10 +1005,7 @@ def _extract_gemini_usage(resp: Any):
 
 def _is_gpt5_family_model(model_name: str) -> bool:
     m = str(model_name).lower()
-    return (
-        "gpt-5" in m
-        or "gpt5" in m
-    )
+    return ("gpt-5" in m or "gpt5" in m)
 
 
 def _use_max_completion_tokens(model_name: str) -> bool:
@@ -921,23 +1055,6 @@ def gpt_response(
 
     _sleep_for_model(model)
 
-    # def _build_gpt_chat_kwargs(use_max_completion: bool) -> dict:
-    #     kwargs: Dict[str, Any] = {
-    #         "model": model,
-    #         "messages": message,
-    #     }
-    #     if use_max_completion:
-    #         kwargs["max_completion_tokens"] = max_tokens
-    #     else:
-    #         kwargs["max_tokens"] = max_tokens
-    #     if temperature is not None:
-    #         kwargs["temperature"] = temperature
-    #     if top_p is not None:
-    #         kwargs["top_p"] = top_p
-    #     if _is_gpt5_family_model(model):
-    #         kwargs["reasoning_effort"] = reasoning_effort
-    #     return kwargs
-
     def _build_gpt_chat_kwargs(use_max_completion: bool) -> dict:
         kwargs: Dict[str, Any] = {
             "model": model,
@@ -949,8 +1066,6 @@ def gpt_response(
         else:
             kwargs["max_tokens"] = max_tokens
 
-        # GPT-5 family on Azure/OpenAI reasoning endpoints:
-        # do not send temperature/top_p unless you are sure the deployment supports them.
         if not _is_gpt5_family_model(model):
             if temperature is not None:
                 kwargs["temperature"] = temperature
@@ -1091,6 +1206,7 @@ def gemini_response(
         time.sleep(3)
         return gemini_response(message, model, temperature, top_p, max_tokens, reasoning_effort)
 
+
 def claude_aiproxy_response(
     message,
     model=None,
@@ -1227,13 +1343,29 @@ def qwen_response(
     client = _get_remote_qwen_client(model)
 
     try:
-        qwen_tokenizer = _load_tokenizer_cached(tokenizer_path)
-        raw_prompt_text = _apply_chat_template_safely(
-            qwen_tokenizer,
-            message,
-            family="qwen",
-            enable_reasoning=enable_reasoning,
+        allow_remote_tokenizer_fallback = (
+            os.getenv("ALLOW_REMOTE_TOKENIZER_FALLBACK", "0").strip().lower()
+            in {"1", "true", "yes"}
         )
+
+        qwen_tokenizer = _load_tokenizer_cached(
+            tokenizer_path,
+            allow_remote_fallback=allow_remote_tokenizer_fallback,
+        )
+
+        if qwen_tokenizer is not None:
+            raw_prompt_text = _apply_chat_template_safely(
+                qwen_tokenizer,
+                message,
+                family="qwen",
+                enable_reasoning=enable_reasoning,
+            )
+        else:
+            print(
+                f"Warning: tokenizer unavailable for {tokenizer_path}. "
+                f"Falling back to plain chat prompt for remote API call."
+            )
+            raw_prompt_text = _build_fallback_chat_prompt(message)
 
         chat_completion = _request_completion_with_fallback(
             client=client,
@@ -1331,6 +1463,7 @@ def gpt_oss_20b_response(
         time.sleep(1)
         return gpt_oss_20b_response(message, model, temperature, top_p, max_tokens, reasoning_effort)
 
+
 # ============================================================================
 # Local model responses via vLLM
 # ============================================================================
@@ -1423,6 +1556,7 @@ def local_llama31_8b_response(
     reasoning_effort=DEFAULT_GENERATION_CONFIG["reasoning_effort"],
 ):
     return _local_vllm_response(message, model, temperature, top_p, max_tokens, reasoning_effort)
+
 
 # ============================================================================
 # Router

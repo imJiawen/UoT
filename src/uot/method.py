@@ -41,7 +41,6 @@ def _normalize_response_output(resp: Any) -> Tuple[Any, str, str, int]:
     if cot:
         return raw, str(answer), str(cot), int(think_tokens or 0)
 
-    # backward-compatible fallback for legacy wrappers
     if answer:
         visible_text, thinking_text = _split_thinking_content(str(answer))
         if thinking_text and (think_tokens is None or int(think_tokens or 0) == 0):
@@ -100,13 +99,16 @@ def is_winning_response(text: str) -> bool:
         return False
 
     t = text.strip().lower()
+    if "not correct" in t:
+        return False
+    if re.match(r"^(no|nope|incorrect|false)\b", t):
+        return False
+
     winning_phrases = [
         "you guessed it",
         "you are right",
         "you're right",
         "that is correct",
-        "correct,",
-        "correct.",
         "yes, that's right",
         "yes, you are right",
         "yes, that's correct",
@@ -114,7 +116,138 @@ def is_winning_response(text: str) -> bool:
     return any(p in t for p in winning_phrases)
 
 
+def looks_like_question(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    t = text.strip()
+    if not t:
+        return False
+    return t.endswith("?")
+
+
+def looks_like_guess(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+
+    t = text.strip().lower()
+
+    guess_patterns = [
+        r'^\s*x\s+is\s+["\']?.+["\']?\s*$',
+        r'^\s*is\s+it\s+["\']?.+["\']?\??\s*$',
+        r'^\s*my\s+guess\s+is\s+["\']?.+["\']?\s*$',
+        r'^\s*the\s+answer\s+is\s+["\']?.+["\']?\s*$',
+        r'^\s*i\s+think\s+it\s+is\s+["\']?.+["\']?\s*$',
+        r'^\s*it\s+is\s+["\']?.+["\']?\s*$',
+        r'^\s*["\']?.+["\']?\s*$',
+    ]
+
+    return any(re.match(p, t) for p in guess_patterns)
+
+
+def extract_guess_entity(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+
+    t = text.strip()
+
+    patterns = [
+        r'^\s*x\s+is\s+["\']?(.+?)["\']?\s*$',
+        r'^\s*is\s+it\s+["\']?(.+?)["\']?\??\s*$',
+        r'^\s*my\s+guess\s+is\s+["\']?(.+?)["\']?\s*$',
+        r'^\s*the\s+answer\s+is\s+["\']?(.+?)["\']?\s*$',
+        r'^\s*i\s+think\s+it\s+is\s+["\']?(.+?)["\']?\s*$',
+        r'^\s*it\s+is\s+["\']?(.+?)["\']?\s*$',
+        r'^\s*["\']?(.+?)["\']?\s*$',
+    ]
+
+    for p in patterns:
+        m = re.match(p, t, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+    return ""
+
+
+def normalize_guess_entity(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    t = text.strip().lower()
+    t = re.sub(r'^[\"\']+|[\"\']+$', '', t)
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
+
+
+def _print_guesser_turn_debug(turn_stat: dict):
+    if not isinstance(turn_stat, dict):
+        return
+
+    action_type = turn_stat.get("action_type", "unknown")
+
+    if action_type == "guess":
+        print(
+            f"[GUESSER_DEBUG] turn={turn_stat.get('turn')} "
+            f"type=guess "
+            f"guess={turn_stat.get('normalized_guess')} "
+            f"repeated_guess={turn_stat.get('repeated_guess')} "
+            f"cum_guess_count={turn_stat.get('cumulative_guess_action_count')} "
+            f"cum_repeated_guess_count={turn_stat.get('cumulative_repeated_guess_count')} "
+            f"cum_repeated_guess_rate={turn_stat.get('cumulative_repeated_guess_rate', 0.0):.4f}"
+        )
+    elif action_type == "question":
+        print(
+            f"[GUESSER_DEBUG] turn={turn_stat.get('turn')} "
+            f"type=question "
+            f"repeated_question={turn_stat.get('repeated_question')}"
+        )
+    else:
+        print(
+            f"[GUESSER_DEBUG] turn={turn_stat.get('turn')} "
+            f"type={action_type}"
+        )
+
+
+def _print_oracle_turn_debug(oracle_examiner):
+    if oracle_examiner is None:
+        return
+
+    turn_records = getattr(oracle_examiner, "turn_records", None)
+    if not turn_records:
+        return
+
+    tr = turn_records[-1]
+    tr_type = tr.get("type", "unknown")
+
+    if tr_type in {"question", "direct_guess"}:
+        print(
+            f"[ORACLE_DEBUG] "
+            f"type={tr_type} "
+            f"entropy_before={tr.get('entropy_before', 0.0):.4f} "
+            f"entropy_after={tr.get('entropy_after', 0.0):.4f} "
+            f"support_before={tr.get('support_size_before')} "
+            f"support_after={tr.get('support_size_after')} "
+            f"top1_before={tr.get('posterior_top1_candidate_before')} "
+            f"top1p_before={tr.get('posterior_top1_prob_before', 0.0):.4f} "
+            f"top1_after={tr.get('posterior_top1_candidate_after')} "
+            f"top1p_after={tr.get('posterior_top1_prob_after', 0.0):.4f}"
+        )
+
+        if tr_type == "direct_guess":
+            print(
+                f"[ORACLE_DEBUG] "
+                f"guessed={tr.get('guessed_entity', tr.get('guess_raw'))} "
+                f"result={tr.get('result', tr.get('chosen_answer'))} "
+                f"excluded={tr.get('excluded_candidate')}"
+            )
+
+
 def get_examiner_response(task, history):
+    oracle_examiner = getattr(task, "oracle_examiner", None)
+    if oracle_examiner is not None:
+        if not history:
+            raise ValueError("History is empty for oracle examiner.")
+        last_user_msg = history[-1]["content"]
+        visible_text = oracle_examiner.respond(last_user_msg)
+        return None, visible_text, "", 0
+
     response_fn = get_response_method(task.examiner_model)
 
     if len(history) > 12:
@@ -225,22 +358,37 @@ def get_guesser_naive_response(task, history, ques_id):
     prompt = ""
 
     if is_final_turn:
-        # 最后一轮：强制直接猜，不再问问题
         if task.inform:
-            prompt += task.prompts.final_guess_prompt_inform.format(
-                item_list_str=', '.join(task.set)
+            prompt += (
+                "This is your final turn. "
+                "You must now make exactly one final guess only. "
+                + task.prompts.final_guess_prompt_inform.format(
+                    item_list_str=', '.join(task.set)
+                )
             )
         else:
-            prompt += task.prompts.final_guess_prompt
+            prompt += (
+                "This is your final turn. "
+                "You must now make exactly one final guess only. "
+                + task.prompts.final_guess_prompt
+            )
     else:
-        # 非最后一轮：正常问问题
         if ques_id > int(task.max_turn * 0.7):
             prompt += task.prompts.urge_prompt
             if task.inform:
                 prompt += task.prompts.inform_prompt.format(
                     item_list_str=', '.join(task.set)
                 )
-        prompt += "\nYou must reply with exactly one question only."
+
+        prompt += (
+            "\nReply with exactly one action only.\n"
+            "Allowed actions:\n"
+            "1. one yes/no question, or\n"
+            "2. one direct guess of X.\n"
+            "Do not output multiple questions.\n"
+            "Do not output both a question and a guess.\n"
+            "Keep the reply short."
+        )
 
     if len(msg) == 0:
         msg = [{"role": "system", "content": prompt.strip()}]
@@ -279,199 +427,73 @@ def get_guesser_naive_response(task, history, ques_id):
         )
         return extracted_text, extract_thinking, extract_think_tokens
 
-    if len(rsp_text.split()) > task.expected_action_tokens:
-        if is_final_turn:
-            extracted_text, extract_thinking, extract_think_tokens = extract_guess(rsp_text)
-        else:
-            extracted_text, extract_thinking, extract_think_tokens = extract_ques(rsp_text)
+    merged_thinking = thinking_text
+    merged_think_tokens = int(think_tokens or 0)
 
-        merged_thinking = "\n".join(x for x in [thinking_text, extract_thinking] if x).strip()
-        merged_think_tokens = int(think_tokens or 0) + int(extract_think_tokens or 0)
+    if is_final_turn:
+        if len(rsp_text.split()) > task.expected_action_tokens or looks_like_question(rsp_text):
+            extracted_text, extract_thinking, extract_think_tokens = extract_guess(rsp_text)
+            merged_thinking = "\n".join(x for x in [merged_thinking, extract_thinking] if x).strip()
+            merged_think_tokens += int(extract_think_tokens or 0)
+            return extracted_text, merged_thinking, merged_think_tokens
+
+        return rsp_text, merged_thinking, merged_think_tokens
+
+    if len(rsp_text.split()) > task.expected_action_tokens:
+        if looks_like_question(rsp_text):
+            extracted_text, extract_thinking, extract_think_tokens = extract_ques(rsp_text)
+        else:
+            extracted_text, extract_thinking, extract_think_tokens = extract_guess(rsp_text)
+
+        merged_thinking = "\n".join(x for x in [merged_thinking, extract_thinking] if x).strip()
+        merged_think_tokens += int(extract_think_tokens or 0)
+
+        if not looks_like_question(extracted_text) and not looks_like_guess(extracted_text):
+            extracted_text = "Is it a living thing?"
+
         return extracted_text, merged_thinking, merged_think_tokens
 
-    return rsp_text, thinking_text, int(think_tokens or 0)
+    if looks_like_question(rsp_text) or looks_like_guess(rsp_text):
+        return rsp_text, merged_thinking, merged_think_tokens
 
+    extracted_q, q_thinking, q_tokens = extract_ques(rsp_text)
+    if looks_like_question(extracted_q):
+        merged_thinking = "\n".join(x for x in [merged_thinking, q_thinking] if x).strip()
+        merged_think_tokens += int(q_tokens or 0)
+        return extracted_q, merged_thinking, merged_think_tokens
 
-# def converse(task, i):
-#     item = task.data[i]["target"]
-#     target_decl = task.prompts.target_declaration.format(target=item)
-#     print(target_decl)
-#     print("------ DIALOGUE START ------")
+    extracted_g, g_thinking, g_tokens = extract_guess(rsp_text)
+    if looks_like_guess(extracted_g):
+        merged_thinking = "\n".join(x for x in [merged_thinking, g_thinking] if x).strip()
+        merged_think_tokens += int(g_tokens or 0)
+        return extracted_g, merged_thinking, merged_think_tokens
 
-#     count = 0
-#     state = 0
-
-#     thinking_g = []
-#     thinking_e = []
-#     thinking_tokens_g = 0
-#     thinking_tokens_e = 0
-
-#     if not task.free_answer:
-#         history_e = [{
-#             'role': 'system',
-#             'content': task.prompts.examiner_prologue.format(item=item)
-#         }]
-#     else:
-#         history_e = [{
-#             'role': 'system',
-#             'content': task.prompts.simulator_prologue.format(
-#                 item=item,
-#                 conv_hist=task.data[i]["conv_hist"]
-#             )
-#         }]
-
-#     if "self_repo" in task.data[i]:
-#         guesser_prologue = (
-#             task.prompts.guesser_prologue_FA if task.free_answer
-#             else task.prompts.guesser_prologue
-#         )
-#         history_g = [{
-#             'role': 'system',
-#             'content': guesser_prologue.format(repo=task.data[i]["self_repo"])
-#         }]
-#         print("Self-report:", task.data[i]["self_repo"])
-#         node = task.root.handle_self_repo(task, task.data[i]["self_repo"])
-#     else:
-#         history_g = [{
-#             'role': 'system',
-#             'content': task.prompts.guesser_prologue
-#         }]
-
-#         if task.open_set_size > 0 and task.n_pre_ask > 0:
-#             for _ in range(task.n_pre_ask):
-#                 bot1_response_text, bot1_thinking_text, bot1_think_tokens = get_guesser_naive_response(task, history_g, count + 1)
-#                 print("Bot 2:", bot1_response_text)
-
-#                 if bot1_thinking_text:
-#                     thinking_g.append({
-#                         'turn': count + 1,
-#                         'content': bot1_thinking_text,
-#                         'tokens': int(bot1_think_tokens or 0),
-#                     })
-#                     thinking_tokens_g += int(bot1_think_tokens or 0)
-
-#                 history_g.append({'role': 'assistant', 'content': bot1_response_text})
-#                 history_e.append({'role': 'user', 'content': bot1_response_text})
-
-#                 _, bot2_response_text, bot2_thinking_text, bot2_think_tokens = get_examiner_response(task, history_e)
-#                 print("Bot 1:", bot2_response_text)
-
-#                 if bot2_thinking_text:
-#                     thinking_e.append({
-#                         'turn': count + 1,
-#                         'content': bot2_thinking_text,
-#                         'tokens': int(bot2_think_tokens or 0),
-#                     })
-#                     thinking_tokens_e += int(bot2_think_tokens or 0)
-
-#                 history_e.append({'role': 'assistant', 'content': bot2_response_text})
-#                 history_g.append({'role': 'user', 'content': bot2_response_text})
-
-#                 count += 1
-#                 print('------', count, '-------------')
-
-#             node = task.root.handle_self_repo(task, history_g)
-#         else:
-#             node = task.root.handle_self_repo(task, history_g) if task.open_set_size > 0 else task.root
-
-#     node, bot1_response, bot1_response_text, bot1_thinking_text, bot1_think_tokens, flag = get_guesser_response(
-#         task, history_g, count + 1, node
-#     )
-#     print("Bot 2:", bot1_response_text)
-
-#     if bot1_thinking_text:
-#         thinking_g.append({
-#             'turn': count + 1,
-#             'content': bot1_thinking_text,
-#             'tokens': int(bot1_think_tokens or 0),
-#         })
-#         thinking_tokens_g += int(bot1_think_tokens or 0)
-
-#     history_g.append({'role': 'assistant', 'content': bot1_response_text})
-#     history_e.append({'role': 'user', 'content': bot1_response_text})
-
-#     while True:
-#         _, bot2_response_text, bot2_thinking_text, bot2_think_tokens = get_examiner_response(task, history_e)
-
-#         if task.free_answer and flag:
-#             node = node.handle_free_answer(task, bot1_response_text, bot2_response_text)
-#         else:
-#             yn = parse_yes_no(bot2_response_text)
-#             if yn is True:
-#                 node = node.ans2node(True)
-#             elif yn is False:
-#                 node = node.ans2node(False)
-
-#         if bot2_thinking_text:
-#             thinking_e.append({
-#                 'turn': count + 1,
-#                 'content': bot2_thinking_text,
-#                 'tokens': int(bot2_think_tokens or 0),
-#             })
-#             thinking_tokens_e += int(bot2_think_tokens or 0)
-
-#         history_e.append({'role': 'assistant', 'content': bot2_response_text})
-#         history_g.append({'role': 'user', 'content': bot2_response_text})
-#         print("Bot 1:", bot2_response_text)
-
-#         if is_winning_response(bot2_response_text):
-#             state = 1
-#             break
-
-#         count += 1
-#         print('------', count, '-------------')
-
-#         if count >= task.max_turn:
-#             print("Bot 1: Sorry, time's up. You lose this game.", target_decl)
-#             state = -1
-#             break
-
-#         if (
-#             count <= int(task.max_turn * 0.3) + task.n_pre_ask
-#             and task.open_set_size > 0
-#             and len(node.items) < task.size_to_renew
-#         ):
-#             node = renew_node_to_root(task, node, history_g)
-
-#         node, bot1_response, bot1_response_text, bot1_thinking_text, bot1_think_tokens, flag = get_guesser_response(
-#             task, history_g, count + 1, node
-#         )
-#         print("Bot 2:", bot1_response_text)
-
-#         if bot1_thinking_text:
-#             thinking_g.append({
-#                 'turn': count + 1,
-#                 'content': bot1_thinking_text,
-#                 'tokens': int(bot1_think_tokens or 0),
-#             })
-#             thinking_tokens_g += int(bot1_think_tokens or 0)
-
-#         history_g.append({'role': 'assistant', 'content': bot1_response_text})
-#         history_e.append({'role': 'user', 'content': bot1_response_text})
-
-#     return {
-#         'index': i,
-#         'turn': count,
-#         'history_g': history_g,
-#         'history_e': history_e,
-#         'thinking_g': thinking_g,
-#         'thinking_e': thinking_e,
-#         'thinking_tokens_g': thinking_tokens_g,
-#         'thinking_tokens_e': thinking_tokens_e,
-#         'state': state,
-#         'item': task.data[i]["target"]
-#     }
+    return "Is it a living thing?", merged_thinking, merged_think_tokens
 
 
 def naive_converse(task, i):
     item = task.data[i]["target"]
-    target_decl = task.prompts.target_declaration.format(target=item)
-    print(target_decl)
+    is_oracle_mode = getattr(task, "oracle_examiner", None) is not None
+
+    if is_oracle_mode:
+        print(
+            f"Oracle mode: {getattr(task, 'examiner_mode', 'oracle')}, "
+            f"pool={getattr(task, 'oracle_pool', 'UNKNOWN')}"
+        )
+    else:
+        target_decl = task.prompts.target_declaration.format(target=item)
+        print(target_decl)
 
     thinking_g = []
     thinking_e = []
     thinking_tokens_g = 0
     thinking_tokens_e = 0
+
+    guesser_turn_stats = []
+    seen_guess_entities = set()
+    seen_questions = set()
+    repeated_guess_count = 0
+    guess_action_count = 0
 
     if "self_repo" in task.data[i]:
         guesser_prologue = (
@@ -503,11 +525,54 @@ def naive_converse(task, i):
             )
         }]
 
+    def _record_guesser_action(turn_idx: int, action_text: str):
+        nonlocal repeated_guess_count, guess_action_count
+
+        action_type = "other"
+        normalized_guess = None
+        repeated_guess = False
+        repeated_question = False
+
+        if looks_like_question(action_text):
+            action_type = "question"
+            q_norm = re.sub(r"\s+", " ", action_text.strip().lower())
+            repeated_question = q_norm in seen_questions
+            seen_questions.add(q_norm)
+
+        elif looks_like_guess(action_text):
+            action_type = "guess"
+            guess_action_count += 1
+            guess_raw = extract_guess_entity(action_text)
+            normalized_guess = normalize_guess_entity(guess_raw)
+            repeated_guess = normalized_guess in seen_guess_entities if normalized_guess else False
+            if repeated_guess:
+                repeated_guess_count += 1
+            if normalized_guess:
+                seen_guess_entities.add(normalized_guess)
+
+        repeated_guess_rate = (
+            repeated_guess_count / guess_action_count if guess_action_count > 0 else 0.0
+        )
+
+        guesser_turn_stats.append({
+            "turn": turn_idx,
+            "action_text": action_text,
+            "action_type": action_type,
+            "normalized_guess": normalized_guess,
+            "repeated_guess": repeated_guess,
+            "repeated_question": repeated_question,
+            "cumulative_guess_action_count": guess_action_count,
+            "cumulative_repeated_guess_count": repeated_guess_count,
+            "cumulative_repeated_guess_rate": repeated_guess_rate,
+        })
+
     print("------ DIALOGUE START ------")
     count = 0
 
     bot1_response_text, bot1_thinking_text, bot1_think_tokens = get_guesser_naive_response(task, history_g, count + 1)
     print("Bot 2:", bot1_response_text)
+    _record_guesser_action(count + 1, bot1_response_text)
+    _print_guesser_turn_debug(guesser_turn_stats[-1])
 
     if bot1_thinking_text:
         thinking_g.append({
@@ -534,6 +599,8 @@ def naive_converse(task, i):
         history_e.append({'role': 'assistant', 'content': bot2_response_text})
         history_g.append({'role': 'user', 'content': bot2_response_text})
         print("Bot 1:", bot2_response_text)
+        if getattr(task, "oracle_examiner", None) is not None:
+            _print_oracle_turn_debug(task.oracle_examiner)
 
         if is_winning_response(bot2_response_text):
             state = 1
@@ -543,12 +610,17 @@ def naive_converse(task, i):
         print('------', count, '-------------')
 
         if count >= task.max_turn:
-            print("Bot 1: Sorry, time's up. You lose this game.", target_decl)
+            if is_oracle_mode:
+                print("Bot 1: Sorry, time's up. You lose this game.")
+            else:
+                print("Bot 1: Sorry, time's up. You lose this game.", target_decl)
             state = -1
             break
 
         bot1_response_text, bot1_thinking_text, bot1_think_tokens = get_guesser_naive_response(task, history_g, count + 1)
         print("Bot 2:", bot1_response_text)
+        _record_guesser_action(count + 1, bot1_response_text)
+        _print_guesser_turn_debug(guesser_turn_stats[-1])
 
         if bot1_thinking_text:
             thinking_g.append({
@@ -561,6 +633,28 @@ def naive_converse(task, i):
         history_g.append({'role': 'assistant', 'content': bot1_response_text})
         history_e.append({'role': 'user', 'content': bot1_response_text})
 
+    oracle_state = None
+    if getattr(task, "oracle_examiner", None) is not None:
+        oracle_state = task.oracle_examiner.export_state()
+
+    final_repeated_guess_rate = (
+        repeated_guess_count / guess_action_count if guess_action_count > 0 else 0.0
+    )
+
+    print(
+        f"[EPISODE_SUMMARY] "
+        f"guess_actions={guess_action_count} "
+        f"repeated_guesses={repeated_guess_count} "
+        f"repeated_guess_rate={final_repeated_guess_rate:.4f}"
+    )
+
+    if oracle_state is not None:
+        print(
+            f"[EPISODE_SUMMARY] "
+            f"oracle_final_entropy={oracle_state.get('final_entropy', 0.0):.4f} "
+            f"oracle_final_target={oracle_state.get('final_target')}"
+        )
+
     return {
         'index': i,
         'turn': count,
@@ -572,4 +666,14 @@ def naive_converse(task, i):
         'thinking_tokens_e': thinking_tokens_e,
         'state': state,
         'item': task.data[i]["target"],
+
+        'guesser_turn_stats': guesser_turn_stats,
+        'guesser_guess_action_count': guess_action_count,
+        'guesser_repeated_guess_count': repeated_guess_count,
+        'guesser_repeated_guess_rate': final_repeated_guess_rate,
+
+        'oracle_state': oracle_state,
+        'oracle_final_target': None if oracle_state is None else oracle_state.get("final_target"),
+        'oracle_mode': None if oracle_state is None else oracle_state.get("mode"),
+        'oracle_pool_name': None if oracle_state is None else oracle_state.get("pool_name"),
     }
