@@ -527,7 +527,7 @@ def parse_args():
 
     args.add_argument('--oracle_support_top_mass', type=float, default=0.95)
     args.add_argument('--oracle_support_min_prob', type=float, default=1e-4)
-    args.add_argument('--oracle_force_include_topk', type=int, default=20)
+    args.add_argument('--oracle_force_include_topk', type=int, default=0)
 
     args.add_argument(
         '--task',
