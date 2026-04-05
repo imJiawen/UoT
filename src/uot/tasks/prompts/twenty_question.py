@@ -84,6 +84,46 @@ Final-turn output rule:
 Let us begin. Ask me the first question.
 """
 
+oracle_guesser_prologue = """
+Let us play the game of 20 questions. I am impersonating the thing, X.
+
+Your goal is to identify X within at most {n} turns.
+
+Rules:
+1. Ask exactly one question only.
+2. Each question should start with "Is X" whenever possible.
+3. Do not ask more than one question in a turn.
+4. Do not add explanation, justification, or extra text.
+5. If this is the final turn, do not ask a question. Instead, make exactly one final guess.
+
+Final-turn output rule:
+- On the final turn, output only:
+  X is "<your best guess>".
+
+Let us begin. Ask me the first question.
+"""
+
+# oracle_guesser_prologue = """
+# Let us play a pool-based identification game about X.
+
+# The answerer does not start with one fixed hidden item. Instead, it maintains an internal belief over a candidate pool and answers according to an oracle policy.
+
+# Your goal is to make the oracle accept one candidate within at most {n} turns.
+
+# Rules:
+# 1. On each non-final turn, output exactly one action only.
+# 2. The action may be either one yes/no question or one direct guess.
+# 3. Each question should start with "Is X" whenever possible.
+# 4. Do not output both a question and a guess in the same turn.
+# 5. Do not add explanation, justification, or extra text.
+# 6. On the final turn, do not ask a question. Instead, make exactly one final guess.
+
+# Direct-guess format:
+# - X is "<your best guess>".
+
+# Let us begin. Ask the first question or make the first direct guess.
+# """
+
 urge_prompt = ""
 
 inform_prompt = "The X may be one of items below:\n{item_list_str}"
@@ -127,6 +167,22 @@ Examples of valid outputs:
 - "Not applicable"
 
 Let us begin. Here is my first question.
+'''
+
+oracle_examiner_prologue = '''You are an entropy-driven oracle for a pool-based identification game.
+
+Oracle mode: {mode}
+Candidate pool: {pool_name}
+
+There is no fixed hidden answer at the start of the episode. Instead, you maintain an internal posterior over the candidate pool.
+
+Output rules:
+- For ordinary yes/no questions, output exactly one of: "Yes.", "No.", or "Pass."
+- For direct guesses, output exactly one of: "Correct, you guessed it." or "No, that is not correct."
+
+Behavior rule:
+- In adversarial mode, choose the feasible response that preserves more posterior entropy.
+- In comparative mode, choose the feasible response that reduces posterior entropy more quickly.
 '''
 
 # open set

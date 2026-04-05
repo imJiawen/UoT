@@ -4,6 +4,11 @@ from typing import Any, Tuple
 
 from src.uot.chat_utils import renew_open_set
 from src.uot.models import get_response_method, unpack_model_response
+from src.uot.twenty_question_utils import (
+    extract_guess_entity,
+    looks_like_guess,
+    normalize_guess_entity,
+)
 from src.uot.uot import select, renew_node_to_root
 
 
@@ -125,57 +130,6 @@ def looks_like_question(text: str) -> bool:
     return t.endswith("?")
 
 
-def looks_like_guess(text: str) -> bool:
-    if not isinstance(text, str):
-        return False
-
-    t = text.strip().lower()
-
-    guess_patterns = [
-        r'^\s*x\s+is\s+["\']?.+["\']?\s*$',
-        r'^\s*is\s+it\s+["\']?.+["\']?\??\s*$',
-        r'^\s*my\s+guess\s+is\s+["\']?.+["\']?\s*$',
-        r'^\s*the\s+answer\s+is\s+["\']?.+["\']?\s*$',
-        r'^\s*i\s+think\s+it\s+is\s+["\']?.+["\']?\s*$',
-        r'^\s*it\s+is\s+["\']?.+["\']?\s*$',
-        r'^\s*["\']?.+["\']?\s*$',
-    ]
-
-    return any(re.match(p, t) for p in guess_patterns)
-
-
-def extract_guess_entity(text: str) -> str:
-    if not isinstance(text, str):
-        return ""
-
-    t = text.strip()
-
-    patterns = [
-        r'^\s*x\s+is\s+["\']?(.+?)["\']?\s*$',
-        r'^\s*is\s+it\s+["\']?(.+?)["\']?\??\s*$',
-        r'^\s*my\s+guess\s+is\s+["\']?(.+?)["\']?\s*$',
-        r'^\s*the\s+answer\s+is\s+["\']?(.+?)["\']?\s*$',
-        r'^\s*i\s+think\s+it\s+is\s+["\']?(.+?)["\']?\s*$',
-        r'^\s*it\s+is\s+["\']?(.+?)["\']?\s*$',
-        r'^\s*["\']?(.+?)["\']?\s*$',
-    ]
-
-    for p in patterns:
-        m = re.match(p, t, flags=re.IGNORECASE)
-        if m:
-            return m.group(1).strip().strip('"').strip("'")
-    return ""
-
-
-def normalize_guess_entity(text: str) -> str:
-    if not isinstance(text, str):
-        return ""
-    t = text.strip().lower()
-    t = re.sub(r'^[\"\']+|[\"\']+$', '', t)
-    t = re.sub(r"\s+", " ", t)
-    return t.strip()
-
-
 def _print_guesser_turn_debug(turn_stat: dict):
     if not isinstance(turn_stat, dict):
         return
@@ -220,6 +174,7 @@ def _print_oracle_turn_debug(oracle_examiner):
         print(
             f"[ORACLE_DEBUG] "
             f"type={tr_type} "
+            f"policy={tr.get('decision_policy', tr.get('chosen_outcome', 'n/a'))} "
             f"entropy_before={tr.get('entropy_before', 0.0):.4f} "
             f"entropy_after={tr.get('entropy_after', 0.0):.4f} "
             f"support_before={tr.get('support_size_before')} "
@@ -236,6 +191,12 @@ def _print_oracle_turn_debug(oracle_examiner):
                 f"guessed={tr.get('guessed_entity', tr.get('guess_raw'))} "
                 f"result={tr.get('result', tr.get('chosen_answer'))} "
                 f"excluded={tr.get('excluded_candidate')}"
+            )
+        elif tr_type == "question":
+            print(
+                f"[ORACLE_DEBUG] "
+                f"support_consensus={tr.get('support_answer_consensus')} "
+                f"locked_target={tr.get('effective_target_candidate')}"
             )
 
 
@@ -375,10 +336,6 @@ def get_guesser_naive_response(task, history, ques_id):
     else:
         if ques_id > int(task.max_turn * 0.7):
             prompt += task.prompts.urge_prompt
-            if task.inform:
-                prompt += task.prompts.inform_prompt.format(
-                    item_list_str=', '.join(task.set)
-                )
 
         prompt += (
             "\nReply with exactly one action only.\n"
@@ -474,6 +431,12 @@ def get_guesser_naive_response(task, history, ques_id):
 def naive_converse(task, i):
     item = task.data[i]["target"]
     is_oracle_mode = getattr(task, "oracle_examiner", None) is not None
+    inform_prompt = ""
+
+    if task.inform:
+        inform_prompt = "\n\n" + task.prompts.inform_prompt.format(
+            item_list_str=', '.join(task.set)
+        )
 
     if is_oracle_mode:
         print(
@@ -498,20 +461,36 @@ def naive_converse(task, i):
     if "self_repo" in task.data[i]:
         guesser_prologue = (
             task.prompts.guesser_prologue_FA if task.free_answer
-            else task.prompts.guesser_prologue.format(n=task.max_turn)
+            else (
+                task.prompts.oracle_guesser_prologue.format(n=task.max_turn)
+                if is_oracle_mode
+                else task.prompts.guesser_prologue.format(n=task.max_turn)
+            )
         )
         history_g = [{
             'role': 'system',
-            'content': guesser_prologue.format(repo=task.data[i]["self_repo"])
+            'content': guesser_prologue.format(repo=task.data[i]["self_repo"]) + inform_prompt
         }]
         print("Self-report:", task.data[i]["self_repo"])
     else:
         history_g = [{
             'role': 'system',
-            'content': task.prompts.guesser_prologue.format(n=task.max_turn)
+            'content': (
+                task.prompts.oracle_guesser_prologue.format(n=task.max_turn)
+                if is_oracle_mode
+                else task.prompts.guesser_prologue.format(n=task.max_turn)
+            ) + inform_prompt
         }]
 
-    if not task.free_answer:
+    if is_oracle_mode:
+        history_e = [{
+            'role': 'system',
+            'content': task.prompts.oracle_examiner_prologue.format(
+                mode=getattr(task, "examiner_mode", "oracle"),
+                pool_name=getattr(task, "oracle_pool", "UNKNOWN"),
+            )
+        }]
+    elif not task.free_answer:
         history_e = [{
             'role': 'system',
             'content': task.prompts.examiner_prologue.format(item=item)
@@ -652,8 +631,26 @@ def naive_converse(task, i):
         print(
             f"[EPISODE_SUMMARY] "
             f"oracle_final_entropy={oracle_state.get('final_entropy', 0.0):.4f} "
-            f"oracle_final_target={oracle_state.get('final_target')}"
+            f"oracle_final_target={oracle_state.get('final_target')} "
+            f"oracle_top1={oracle_state.get('posterior_top1_candidate_final')} "
+            f"oracle_support_size={oracle_state.get('support_size_final')} "
+            f"oracle_termination_reason={oracle_state.get('termination_reason')}"
         )
+
+    oracle_accepted_guess = None if oracle_state is None else oracle_state.get("accepted_guess")
+    oracle_episode_outcome = None
+    oracle_accepted_guess_matches_item = None
+    if oracle_state is not None:
+        oracle_episode_outcome = (
+            oracle_state.get("termination_reason")
+            if oracle_state.get("termination_reason")
+            else ("max_turn" if state != 1 else "oracle_accept")
+        )
+        if oracle_accepted_guess:
+            oracle_accepted_guess_matches_item = (
+                normalize_guess_entity(oracle_accepted_guess)
+                == normalize_guess_entity(item)
+            )
 
     return {
         'index': i,
@@ -676,4 +673,12 @@ def naive_converse(task, i):
         'oracle_final_target': None if oracle_state is None else oracle_state.get("final_target"),
         'oracle_mode': None if oracle_state is None else oracle_state.get("mode"),
         'oracle_pool_name': None if oracle_state is None else oracle_state.get("pool_name"),
+        'oracle_final_target_policy': None if oracle_state is None else oracle_state.get("final_target_policy"),
+        'oracle_termination_reason': None if oracle_state is None else oracle_state.get("termination_reason"),
+        'oracle_episode_outcome': oracle_episode_outcome,
+        'oracle_accepted_guess': oracle_accepted_guess,
+        'oracle_accepted_guess_matches_item': oracle_accepted_guess_matches_item,
+        'oracle_support_size_final': None if oracle_state is None else oracle_state.get("support_size_final"),
+        'oracle_top1_candidate_final': None if oracle_state is None else oracle_state.get("posterior_top1_candidate_final"),
+        'oracle_top1_prob_final': None if oracle_state is None else oracle_state.get("posterior_top1_prob_final"),
     }

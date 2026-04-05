@@ -1008,6 +1008,13 @@ def _is_gpt5_family_model(model_name: str) -> bool:
     return ("gpt-5" in m or "gpt5" in m)
 
 
+def is_hosted_gpt_model(model_name: str) -> bool:
+    m = str(model_name).lower()
+    if _is_gpt5_family_model(m):
+        return True
+    return m in {"gpt-4", "gpt-3.5-turbo"}
+
+
 def _use_max_completion_tokens(model_name: str) -> bool:
     flag = os.getenv("OPENAI_USE_MAX_COMPLETION_TOKENS", "").strip().lower()
     if flag in ("1", "true", "yes"):
@@ -1042,18 +1049,22 @@ def _is_client_bad_request(err: Exception) -> bool:
     return False
 
 
-def gpt_response(
+def hosted_gpt_chat_completion(
     message: list,
     model="gpt-5-mini",
     temperature=DEFAULT_GENERATION_CONFIG["temperature"],
     top_p=DEFAULT_GENERATION_CONFIG["top_p"],
     max_tokens=DEFAULT_GENERATION_CONFIG["max_tokens"],
     reasoning_effort=DEFAULT_GENERATION_CONFIG["reasoning_effort"],
+    client=None,
+    sleep_for_model: bool = True,
 ):
-    if openai_client is None:
+    active_client = openai_client if client is None else client
+    if active_client is None:
         raise RuntimeError("AZURE_OPENAI_API_KEY is not set, but GPT model was requested.")
 
-    _sleep_for_model(model)
+    if sleep_for_model:
+        _sleep_for_model(model)
 
     def _build_gpt_chat_kwargs(use_max_completion: bool) -> dict:
         kwargs: Dict[str, Any] = {
@@ -1079,12 +1090,12 @@ def gpt_response(
 
     def _create_chat_completion(kwargs: dict):
         try:
-            return openai_client.chat.completions.create(**kwargs)
+            return active_client.chat.completions.create(**kwargs)
         except TypeError:
             if "reasoning_effort" in kwargs:
                 reff = kwargs.pop("reasoning_effort")
                 kwargs["extra_body"] = {"reasoning_effort": reff}
-            return openai_client.chat.completions.create(**kwargs)
+            return active_client.chat.completions.create(**kwargs)
 
     use_mct = _use_max_completion_tokens(model)
     kwargs = _build_gpt_chat_kwargs(use_mct)
@@ -1100,7 +1111,16 @@ def gpt_response(
         else:
             print(e)
             time.sleep(time_gap.get(model, 3) * 2)
-            return gpt_response(message, model, temperature, top_p, max_tokens, reasoning_effort)
+            return hosted_gpt_chat_completion(
+                message,
+                model=model,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+                client=active_client,
+                sleep_for_model=sleep_for_model,
+            )
 
     try:
         text = res.choices[0].message.content
@@ -1118,7 +1138,34 @@ def gpt_response(
     except Exception as e:
         print(e)
         time.sleep(time_gap.get(model, 3) * 2)
-        return gpt_response(message, model, temperature, top_p, max_tokens, reasoning_effort)
+        return hosted_gpt_chat_completion(
+            message,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+            client=active_client,
+            sleep_for_model=sleep_for_model,
+        )
+
+
+def gpt_response(
+    message: list,
+    model="gpt-5-mini",
+    temperature=DEFAULT_GENERATION_CONFIG["temperature"],
+    top_p=DEFAULT_GENERATION_CONFIG["top_p"],
+    max_tokens=DEFAULT_GENERATION_CONFIG["max_tokens"],
+    reasoning_effort=DEFAULT_GENERATION_CONFIG["reasoning_effort"],
+):
+    return hosted_gpt_chat_completion(
+        message,
+        model=model,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
+    )
 
 
 def cohere_response(

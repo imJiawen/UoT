@@ -98,7 +98,7 @@ Run experiments via `run.py`, which implements the UoT algorithm, as well as the
 
 - `--naive_run`: If True, run with naive prompting method, otherwise UoT.
 
-- `--inform`: If True, the guesser is given answer set. (Consider only when `--naive_run` is True) 
+- `--inform`: If True, the guesser is given the full answer set in the opening prompt. (Consider only when `--naive_run` is True) 
 
 - `--reward_lambda`: Parameter $\lambda$ in uncertainty-based reward setting.
 
