@@ -561,19 +561,29 @@ def _compute_metrics(logs: List[Dict[str, Any]], tokenizer) -> Dict[str, Any]:
 
 
 def _attach_runtime_config_to_task(task, args):
-    resolved_oracle_model, resolved_oracle_base_url = _resolve_oracle_judge_model_and_base_url(args)
-    resolved_oracle_cache_path = _resolve_oracle_cache_path(
-        args,
-        resolved_oracle_model,
-        resolved_oracle_base_url,
-    )
-
     task.examiner_mode = args.examiner_mode
     task.oracle_pool = args.oracle_pool
-    task.oracle_judge_model = resolved_oracle_model
-    task.oracle_base_url = resolved_oracle_base_url
+
+    if args.examiner_mode == "fixed":
+        # Oracle judge is not used; avoid requiring --oracle_judge_model for fixed examiner runs.
+        task.oracle_judge_model = (
+            str(args.oracle_judge_model).strip() if args.oracle_judge_model is not None else ""
+        )
+        task.oracle_base_url = str(args.oracle_base_url).strip()
+        raw_cache = str(args.oracle_cache_path).strip() if args.oracle_cache_path is not None else ""
+        task.oracle_cache_path = raw_cache if raw_cache else "judge_cache.json"
+    else:
+        resolved_oracle_model, resolved_oracle_base_url = _resolve_oracle_judge_model_and_base_url(args)
+        resolved_oracle_cache_path = _resolve_oracle_cache_path(
+            args,
+            resolved_oracle_model,
+            resolved_oracle_base_url,
+        )
+        task.oracle_judge_model = resolved_oracle_model
+        task.oracle_base_url = resolved_oracle_base_url
+        task.oracle_cache_path = resolved_oracle_cache_path
+
     task.oracle_api_key = args.oracle_api_key
-    task.oracle_cache_path = resolved_oracle_cache_path
     task.oracle_match_prob = args.oracle_match_prob
     task.oracle_mismatch_prob = args.oracle_mismatch_prob
     task.oracle_pass_prob = args.oracle_pass_prob

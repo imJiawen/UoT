@@ -52,7 +52,7 @@ DEFAULT_GENERATION_CONFIG = {
     "temperature": 0.6,
     "top_p": 0.95,
     "max_tokens": MAX_TOKENS,
-    "reasoning_effort": "medium",
+    "reasoning_effort": "high",
 }
 
 time_gap = {
